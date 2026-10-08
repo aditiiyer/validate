@@ -150,14 +150,16 @@ def runAutoSegmentationForCohort(cohortDir, autosegStructNames, installBaseDir,
         patientInfo = (patientInfoDf.loc[patientId]
                        if patientInfoDf is not None and patientId in patientInfoDf.index
                        else None)
-        # For each required structure:
-        for groupKey, structEntries in structsByModel.items():
+        # Run AI-models before classic ones
+        orderedGroups = sorted(structsByModel.items(),
+                               key=lambda kv: kv[1][0][1].type == 'classic')
+        for groupKey, structEntries in orderedGroups:
             firstDerivation = structEntries[0][1]
             isClassic = firstDerivation.type == 'classic'
-            # aiModelName also doubles as the availability-log key;
-            # classic availability entries are in classic_<structure> log.
-            aiModelName = (f"classic_{structEntries[0][0]}" if isClassic
-                          else firstDerivation.aiModelName)
+            # aiModelName also doubles as the availability-log key; shared
+            # with _checkExistingAvailability via structures.getAvailabilityLogKey
+            # so the two never disagree on where a structure's log lives.
+            aiModelName = structures.getAvailabilityLogKey(structEntries[0][0])
             needed = [(name, d) for name, d in structEntries
                      if overwrite or not autoseg_log.isAvailable(
                          cohortDir, aiModelName, patientId, name)]

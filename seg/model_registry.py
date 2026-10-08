@@ -43,8 +43,11 @@ def recordInstall(modelNum, modelName, installDir):
         "installDate": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     } #Note: Over-writes if re-installed
     REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(REGISTRY_PATH, "w") as f:
+    # Write to a temporary file and rename, so a crash never leaves a partial registry
+    tmpPath = REGISTRY_PATH.with_name(REGISTRY_PATH.name + ".tmp")
+    with open(tmpPath, "w") as f:
         json.dump(registry, f, indent=2)
+    tmpPath.replace(REGISTRY_PATH)
     return 0
 
 
