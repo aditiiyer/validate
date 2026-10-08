@@ -6,6 +6,7 @@ operations such as union, intersection, diff etc.
 """
 
 import json
+import warnings
 from dataclasses import dataclass
 from typing import Callable
 
@@ -153,12 +154,16 @@ def deriveSubmandibularGlands(planC, planNum):
     return structNum, planC
 
 
-def deriveSCRR(planC, planNum):
+def deriveSCRR(planC, planNum=None):
     modelName = 'SCRR'
     paramDict = {'structNameDict': {'parotid': ['Left parotid', 'Right parotid'],
                                     'masseter': ['Left masseter', 'Right masseter'],
                                     'mandible': ['Mandible']}}
-    scanNum = cerrScan.getScanNumFromUID(planC.dose[planNum].assocScanUID, planC)
+    if planNum is None:
+        scanNum = 0
+        warnings.warn("No dose plan given. Using the first scan by default.")
+    else:
+        scanNum = cerrScan.getScanNumFromUID(planC.dose[planNum].assocScanUID, planC)
     __, __, planC = segModels.run(modelName, planC, scanNum, paramDict)
     planC = cerrStr.structUnion(['leftSCRR', 'rightSCRR'], planC, unionStructName=modelName)
     structNum = len(planC.structure) - 1
