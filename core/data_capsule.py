@@ -6,6 +6,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+@dataclass
+class FileInfo:
+    """Patient data location"""
+    data_dir: str | None = None     # Patient folder; None when starting from predictors
+    scan_file: str | None = None    # NIfTI/NRRD only, relative to data_dir
+    dose_file: str | None = None    # NIfTI/NRRD only, relative to data_dir
+    structure_files: dict[str, str] = field(default_factory=dict)  # NIfTI/NRRD only: modelled structure -> "file[:label]", file relative to data_dir
+
 
 @dataclass
 class PlanInfo:
@@ -21,7 +29,7 @@ class PlanInfo:
 class PatientRecord:
     """Patient-level data summary"""
     pt_id: str
-    data_dir: str | None = None
+    file_info: FileInfo | None = None
     plan_info: PlanInfo | None = None
     structures: dict[str, str] = field(default_factory=dict)                # modelled structure mapped to structure name in planC
     predictors: dict[str, float | None] = field(default_factory=dict)  # If None, compute on the fly
@@ -35,7 +43,7 @@ class DataCapsule:
     start_from: str                                                    # dicom | nifti | nrrd | predictors
     model: dict[str, str | None]                                       # {name, file}: ROE model name and its JSON path
     device: str = "cpu"                                                # cpu | gpu
-    data_dir: str | None = None                                        # If beginning from raw data, otherwise None
+    cohort_dir: str | None = None                                      # If beginning from raw data, otherwise None
     predictors_csv: str | None = None                                  # If pre-computed predictors are input via CSV, otherwise None
     plan_structures_csv: str | None = None                             # Optional input CSV specifying structure names, dose plan ID, and fractionation information
     outcomes_csv: str | None = None                                    # Optional input CSV specifying patient outcomes

@@ -119,7 +119,7 @@ def toAnalysisDict(dataCapsule):
     analysisDict = {
         "input": {
             "start_from": dataCapsule.start_from,
-            "data_dir": dataCapsule.data_dir,
+            "data_dir": dataCapsule.cohort_dir,
             "predictors_csv": dataCapsule.predictors_csv,
             "plan_structures_csv": dataCapsule.plan_structures_csv,
             "outcomes_csv": dataCapsule.outcomes_csv,
@@ -161,7 +161,7 @@ def writeSettings(dataCapsule, analysisDir):
 
 
 def toDataCapsule(path):
-    """Read and validate analysis.yaml into a DataCapsule (patients left empty)."""
+    """Read and translate analysis.yaml into DataCapsule."""
     with open(path, "r") as f:
         analysisDict = yaml.safe_load(f)
     checkSettings(analysisDict)
@@ -170,7 +170,7 @@ def toDataCapsule(path):
         start_from=inputs["start_from"],
         model=analysisDict["model"],
         device=analysisDict.get("compute", {}).get("device", "cpu"),
-        data_dir=inputs.get("data_dir"),
+        cohort_dir=inputs.get("data_dir"),
         predictors_csv=inputs.get("predictors_csv"),
         plan_structures_csv=inputs.get("plan_structures_csv"),
         outcomes_csv=inputs.get("outcomes_csv"),
