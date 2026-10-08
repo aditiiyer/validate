@@ -1,0 +1,291 @@
+"""Cohort discovery, importing data and analysis settings to DataCapsule
+
+Required inputs
+ Raw data or pre-computed predictors
+
+    * Raw data
+        cohort_dir/
+            pt001/   (scan, dose and structure files: DICOM, NIfTI or NRRD)
+            pt002/
+            ...
+    * Predictors (CSV input)
+        One row per patient."ID" is required. Other columns are model-dependent.
+        Columns containing DVH metrics should be named "<structure> <metric>"  as in the model file (e.g. "Esophagus meanDose").
+        Values must already be fractionation-corrected if the model requires correction.
+
+Optional inputs:
+
+    * plan_structures_csv (optional input alongside raw data)
+    One row per patient. Only "ID" is required; every other column is optional.
+
+        ID               Patient folder name under cohort_dir.
+        Plan name        DICOM only: RTDOSE file name, used where more than one dose plan is available.
+        Prescribed dose (Gy)  Total prescribed dose. Number only, in Gy.
+        Fraction size (Gy)    Dose per fraction. Number only, in Gy.
+        Fraction number  Number of fractions.
+        Scan file        NIfTI/NRRD only: scan file name or wildcard pattern.
+        Dose file        NIfTI/NRRD only: dose file name or wildcard pattern.
+                         The loaded dose is used as dose index 0.
+        <structure>      One column per structure the model requires, named as in
+                         the model. The value is:
+                         DICOM      : Structure name in the RTSTRUCT
+                         NIfTI/NRRD : Mask file name or pattern, or "file:label"
+                                   for a label map (e.g. "labels.nii.gz:3")
+
+    File names and patterns are relative to the patient's folder and
+    must match exactly one file.
+
+    Example:
+    ID,Prescribed dose (Gy),Fraction size (Gy),Fraction number,Scan file,Dose file,Parotids,Oral cavity
+    pt_1,70,2,35,scan_*.nii.gz,dose_*.nii.gz,Parotids.nii.gz,labels.nii.gz:3
+
+    * predictors_csv (optional, raw data only)
+
+"""
+
+import os
+import glob
+import json
+import pandas as pd
+from pydicom.misc import is_dicom
+
+from cerr import plan_container as pc
+from cerr.roe import dosimetric_models as doseModels
+
+IMAGE_FILE_EXTENSIONS = (".nii", ".nii.gz", ".nrrd")
+PLAN_INFO_COLUMNS = ["ID", "Plan name", "Prescribed dose (Gy)",
+                     "Fraction size (Gy)", "Fraction number"]
+
+
+def discoverPatients(cohortDir):
+    """List patient subdirectories of a cohort directory.
+
+    Args:
+        cohortDir (str): Path to the parent directory holding DICOM/ NIfTI/NRRD data.
+
+    Returns:
+        list of (patientId, dicomDir) tuples, sorted by patientId. Leading-
+        underscore subdirectories (e.g. "_autoseg_logs") are excluded --
+        those hold validate's own logs, not patient data.
+    """
+    entries = []
+    for name in sorted(os.listdir(cohortDir)):
+        path = os.path.join(cohortDir, name)
+        if os.path.isdir(path):
+            entries.append((name, path))
+    return entries
+
+
+def inferFileFormat(dataDir):
+    """Return data format.
+    Identifies raw data format (dicom) or (nifti_nrrd).
+
+    """
+    fileNames = [f for f in os.listdir(dataDir) if os.path.isfile(os.path.join(dataDir, f))]
+    hasImageFiles = any(f.lower().endswith(IMAGE_FILE_EXTENSIONS) for f in fileNames)
+    hasDicomFiles = any(is_dicom(os.path.join(dataDir, f)) for f in fileNames
+                        if not f.lower().endswith(IMAGE_FILE_EXTENSIONS))
+    if hasImageFiles and hasDicomFiles:
+        raise ValueError(f"{dataDir} holds both DICOM and NIfTI/NRRD files.")
+    if hasImageFiles:
+        return "nifti_nrrd"
+    if hasDicomFiles:
+        return "dicom"
+    raise ValueError(f"No DICOM, NIfTI or NRRD files found in {dataDir}.")
+
+
+def loadPatientPlanC(dataDir, patientInfo=None, structNames=()):
+    """Load a single patient's planC from a DICOM, NIfTI or NRRD folder.
+
+    Args:
+        dataDir (str): patient folder.
+        patientInfo (pandas.Series or None): this patient's plan_structures_csv
+            row. Required for NIfTI/NRRD, where it supplies "Scan file",
+            "Dose file" and one column per name in structNames (see module
+            docstring). Not used for DICOM.
+        structNames (iterable of str): NIfTI/NRRD only: structures to load
+            from files. A cell without ":label" is a single mask (label 1).
+
+    Returns:
+        cerr.plan_container.PlanC
+    """
+
+    def _resolveFile(dataDir, pattern, column):
+        """Return the file in dataDir matching pattern (name or wildcard)."""
+        if pattern is None:
+            raise ValueError(f"No '{column}' given for this patient in plan_structures_csv.")
+        matches = sorted(glob.glob(os.path.join(dataDir, pattern)))
+        if len(matches) != 1:
+            raise ValueError(
+                f"'{column}' pattern {pattern!r} matched {len(matches)} files in "
+                f"{dataDir} (expected exactly one): {matches}")
+        return matches[0]
+
+    fileFormat = inferFileFormat(dataDir)
+    if fileFormat == "dicom":
+        return pc.loadDcmDir(dataDir)
+    if fileFormat != "nifti_nrrd":
+        raise ValueError(f"Unsupported file format: {fileFormat!r}")
+
+    scanFile = _resolveFile(dataDir, _textField(patientInfo, "Scan file"), "Scan file")
+    planC = pc.loadNiiScan(scanFile)
+
+    doseFile = _resolveFile(dataDir, _textField(patientInfo, "Dose file"), "Dose file")
+    planC = pc.loadNiiDose(doseFile, 0, planC)
+
+    # Group structures by file so a label map shared by several structures is read once
+    multiLabelFile = {}
+    for structName in structNames:
+        cell = _textField(patientInfo, structName)
+        pattern, _, label = (cell or "").partition(":")
+        structFile = _resolveFile(dataDir, pattern or None, structName)
+        multiLabelFile.setdefault(structFile, {})[structName] = int(label) if label else 1
+    for structFile, labelsDict in multiLabelFile.items():
+        planC = pc.loadNiiStructure(structFile, 0, planC, labelsDict)
+
+    return planC
+
+
+
+def loadPatientInfo(csvPath):
+    """Read optional CSV files (plan_structures_csv, predictors_csv, outcomes_csv) indexed by patient ID.
+
+    All columns besides "ID" are optional and only consulted when needed:
+
+    In plan_structures_csv:
+        "Plan name"       - RTDOSE file name, to disambiguate patients with
+                              more than one dose (see getDoseIndex).
+        "Prescribed dose (Gy)" - total prescribed dose (Gy).
+        "Fraction size (Gy)"   - dose per fraction (Gy).
+        "Fraction number"  - number of fractions.
+        Supplying any two of the last three lets the third be derived (see
+        getFractionation).
+
+    In predictors_csv:
+        "<structure> <metric>" - start_from: predictors only. One column per
+                              dose metric the model uses, named as in the
+                              model file (e.g. "Esophagus meanDose").
+                              Values must already be fractionation-corrected
+                              if the model requires correction.
+        "<predictor>"     - one column per non-dose predictor the model lists,
+                              named as in the model file (e.g. "gender",
+                              "concurrentChemo"). Values are the numeric codes
+                              from the model's "desc" (e.g. Female = 1).
+        With raw data, only non-dose predictors are read from this file; dose
+        metrics are computed from the images.
+
+    In outcomes_csv:
+
+    Args:
+        csvPath (str): path to a CSV with an "ID" column matching the DICOM
+            subdirectory names.
+
+    Returns:
+        pandas.DataFrame indexed by "ID".
+    """
+    df = pd.read_csv(csvPath, dtype=str)
+    df.columns = df.columns.str.strip()
+    if "ID" not in df.columns:
+        raise ValueError(
+            f"CSV must have an 'ID' column; found columns: {list(df.columns)}")
+    duplicateIds = sorted(df.loc[df["ID"].duplicated(), "ID"].unique())
+    if duplicateIds:
+        raise ValueError(f"{csvPath} has duplicate IDs: {duplicateIds}")
+    return df.set_index("ID")
+
+
+def getDoseIndex(planC, patientId=None, patientInfo=None):
+    """Return the index of the dose to use for this patient.
+
+    If planC has exactly one dose, that dose is used. Otherwise patientInfo
+    (a row of loadPatientInfo's result) must supply a "Plan name" value
+    (RTDOSE file name), matched against each dose's doseFileName.
+
+    Args:
+        planC (cerr.plan_container.PlanC): patient's plan container.
+        patientId (str): DICOM subdirectory name, used in error messages.
+        patientInfo (pandas.Series or None): this patient's row from
+            loadPatientInfo, required when planC has more than one dose.
+    """
+    numDoses = len(planC.dose)
+    if numDoses == 0:
+        raise ValueError("No dose found in plan.")
+    if numDoses == 1:
+        return 0
+
+    dosePlanName = patientInfo.get("Plan name") if patientInfo is not None else None
+    if dosePlanName is None or pd.isna(dosePlanName) or not str(dosePlanName).strip():
+        raise ValueError(
+            f"Found {numDoses} doses; provide a 'Plan name' entry for patient "
+            f"{patientId!r} in the CSV to select which one to use.")
+
+    dosePlanName = os.path.basename(str(dosePlanName))
+    fileNames = [os.path.basename(str(d.doseFileName)) for d in planC.dose]
+    matchIdxV = [i for i, fname in enumerate(fileNames) if fname == dosePlanName]
+
+    if not matchIdxV:
+        raise ValueError(
+            f"Dose plan {dosePlanName!r} for patient {patientId!r} does not "
+            f"match any of the {numDoses} dose files found: {fileNames}")
+    if len(matchIdxV) > 1:
+        raise ValueError(
+            f"Dose plan {dosePlanName!r} for patient {patientId!r} matches "
+            f"multiple doses: {[fileNames[i] for i in matchIdxV]}")
+    return matchIdxV[0]
+
+
+def getFractionation(patientInfo):
+    """Return this patient's (fxSize, fxNum) from plan_structures_csv.
+
+    A missing value is derived from "Prescribed dose (Gy)" and the other one.
+    Either value is None if it can't be resolved.
+
+    Args:
+        patientInfo (pandas.Series or None): this patient's row from
+            loadPatientInfo. None if no plan_structures_csv was given, or
+            this patient has no row in it.
+    """
+    return _csvFrxSize(patientInfo), _csvFrxNum(patientInfo)
+
+#============================================
+# Helper functions to read CSVs
+#============================================
+def _textField(patientInfo, column):
+    if patientInfo is None or column not in patientInfo:
+        return None
+    value = patientInfo[column]
+    if value is None or pd.isna(value) or not str(value).strip():
+        return None
+    return str(value).strip()
+
+
+def _numericField(patientInfo, column):
+    if patientInfo is None or column not in patientInfo:
+        return None
+    value = patientInfo[column]
+    if value is None or (isinstance(value, float) and pd.isna(value)) or not str(value).strip():
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        raise ValueError(
+            f"{patientInfo.name}: '{column}' must be a number, got {value!r}") from None
+
+
+def _csvFrxSize(patientInfo):
+    frxSize = _numericField(patientInfo, "Fraction size (Gy)")
+    if frxSize is not None:
+        return frxSize
+    rx = _numericField(patientInfo, "Prescribed dose (Gy)")
+    frxNum = _numericField(patientInfo, "Fraction number")
+    return rx / frxNum if rx is not None and frxNum else None
+
+
+def _csvFrxNum(patientInfo):
+    frxNum = _numericField(patientInfo, "Fraction number")
+    if frxNum is not None:
+        return frxNum
+    rx = _numericField(patientInfo, "Prescribed dose (Gy)")
+    frxSize = _numericField(patientInfo, "Fraction size (Gy)")
+    return rx / frxSize if rx is not None and frxSize else None
+

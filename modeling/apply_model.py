@@ -1,15 +1,8 @@
-"""Apply a cerr.roe dosimetric model to every patient in a cohort.
+"""Apply a cerr.roe dosimetric model to a single patient dataset/pre-computed predictors.
 """
 
 import json
-import pandas as pd
-
 from cerr.roe import dosimetric_models as doseModels
-
-from validate.data_io.data_import import (discoverPatients, loadPatientPlanC, getDoseIndex,
-                                 loadPatientInfo, getFractionation)
-from validate.seg.structures import applyStructureNameMap
-
 
 
 def getFractionCorrectionType(modelFile):
