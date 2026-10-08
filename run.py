@@ -6,24 +6,24 @@ from cerr.roe import dosimetric_models as doseModels
 
 from validate.data_io.data_import import (discoverPatients, loadPatientPlanC, getDoseIndex,
                                  loadPatientInfo, getFractionation)
-from validate.seg.structures import applyStructureNameMap
+from validate.seg.structures import applyStructureNameMap, getRequiredStructures
 from validate.modeling.apply_model import getFractionCorrectionType, getFractionationInputs
 
 RESULT_COLUMNS = ["patient_id", "ntcp", "status", "message"]
 
 
-def applyModelToCohort(cohortDir, modelName, patientInfoCsv=None, structNameMap=None,
+def applyModelToCohort(cohortDir, modelName, planStructuresCsv=None, structNameMap=None,
                        progressCallback=None):
     """Apply a dosimetric model to every patient subdirectory in cohortDir.
 
     Args:
-        cohortDir (str): Parent directory with one DICOM subdir per patient.
+        cohortDir (str): Parent directory with one subdir per patient, holding
+            DICOM, NIfTI or NRRD files (format inferred).
         modelName (str): Built-in model name (see
             cerr.roe.dosimetric_models.listModels()) or path to a custom
             model parameter JSON file.
-        patientInfoCsv (str): optional path to a per-patient info CSV
-            needed only if  patients have more than one dose, or if modelName requires
-            fractionation correction.
+        planStructuresCsv (str): optional path to plan_structures_csv, one row
+            per patient (see data_io.data_import).
         structNameMap (dict): optional {modelStructName: datasetStructName}
             mapping the model's required structures (see
             validate.src.structures.getRequiredStructures) to the structure
@@ -37,12 +37,13 @@ def applyModelToCohort(cohortDir, modelName, patientInfoCsv=None, structNameMap=
     """
     patients = discoverPatients(cohortDir)
     total = len(patients)
-    patientInfoDf = loadPatientInfo(patientInfoCsv) if patientInfoCsv else None
+    patientInfoDf = loadPatientInfo(planStructuresCsv) if planStructuresCsv else None
     correctionType = getFractionCorrectionType(modelName)
     effectiveModel = applyStructureNameMap(modelName, structNameMap)
+    requiredStructs = getRequiredStructures(modelName)
     rows = []
 
-    for i, (patientId, dicomDir) in enumerate(patients):
+    for i, (patientId, dataDir) in enumerate(patients):
         ntcp = None
         status = "ok"
         message = ""
@@ -50,7 +51,7 @@ def applyModelToCohort(cohortDir, modelName, patientInfoCsv=None, structNameMap=
             patientInfo = (patientInfoDf.loc[patientId]
                           if patientInfoDf is not None and patientId in patientInfoDf.index
                           else None)
-            planC = loadPatientPlanC(dicomDir)
+            planC = loadPatientPlanC(dataDir, patientInfo, requiredStructs)
             doseNum = getDoseIndex(planC, patientId=patientId, patientInfo=patientInfo)
             fxSize, fxNum = getFractionation(patientInfo)
             fSizeIn, fNumIn = getFractionationInputs(fxSize, fxNum, correctionType)
