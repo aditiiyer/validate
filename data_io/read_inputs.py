@@ -94,51 +94,40 @@ def inferFileFormat(dataDir):
     raise ValueError(f"No DICOM, NIfTI or NRRD files found in {dataDir}.")
 
 
-def loadPatientPlanC(dataDir, patientInfo=None, structNames=()):
+def loadPatientPlanC(record):
     """Load a single patient's planC from a DICOM, NIfTI or NRRD folder.
 
     Args:
-        dataDir (str): patient folder.
-        patientInfo (pandas.Series or None): this patient's plan_structures_csv
-            row. Required for NIfTI/NRRD, where it supplies "Scan file",
-            "Dose file" and one column per name in structNames (see module
-            docstring). Not used for DICOM.
-        structNames (iterable of str): NIfTI/NRRD only: structures to load
-            from files. A cell without ":label" is a single mask (label 1).
+        record (validate.core.data_capsule.PatientRecord): The patient directory is
+            in record.file_info.data_dir (DICOM). For NIfTI/NRRD,
+            record.file_info.scan_file (required) and dose_file (optional)
+            name the scan and dose, and record.file_info.structure_files maps
+            each modelled structure to its mask file, or "file:label" for a
+            label map (default: binary mask, label 1); all relative to that folder.
+            Each mask is named after its modelled structure in planC.
 
     Returns:
         cerr.plan_container.PlanC
     """
-
-    def _resolveFile(dataDir, pattern, column):
-        """Return the file in dataDir matching pattern (name or wildcard)."""
-        if pattern is None:
-            raise ValueError(f"No '{column}' given for this patient in plan_structures_csv.")
-        matches = sorted(glob.glob(os.path.join(dataDir, pattern)))
-        if len(matches) != 1:
-            raise ValueError(
-                f"'{column}' pattern {pattern!r} matched {len(matches)} files in "
-                f"{dataDir} (expected exactly one): {matches}")
-        return matches[0]
-
+    dataDir = record.file_info.data_dir
     fileFormat = inferFileFormat(dataDir)
     if fileFormat == "dicom":
         return pc.loadDcmDir(dataDir)
     if fileFormat != "nifti_nrrd":
         raise ValueError(f"Unsupported file format: {fileFormat!r}")
 
-    scanFile = _resolveFile(dataDir, _textField(patientInfo, "Scan file"), "Scan file")
-    planC = pc.loadNiiScan(scanFile)
+    if record.file_info.scan_file is None:
+        raise ValueError(f"No 'Scan file' given for patient {record.pt_id!r} in plan_structures_csv.")
+    planC = pc.loadNiiScan(os.path.join(dataDir, record.file_info.scan_file))
 
-    doseFile = _resolveFile(dataDir, _textField(patientInfo, "Dose file"), "Dose file")
-    planC = pc.loadNiiDose(doseFile, 0, planC)
+    if record.file_info.dose_file is not None:
+        planC = pc.loadNiiDose(os.path.join(dataDir, record.file_info.dose_file), 0, planC)
 
     # Group structures by file so a label map shared by several structures is read once
     multiLabelFile = {}
-    for structName in structNames:
-        cell = _textField(patientInfo, structName)
-        pattern, _, label = (cell or "").partition(":")
-        structFile = _resolveFile(dataDir, pattern or None, structName)
+    for structName, fileAndLabel in record.file_info.structure_files.items():
+        maskFile, _, label = fileAndLabel.partition(":")
+        structFile = os.path.join(dataDir, maskFile)
         multiLabelFile.setdefault(structFile, {})[structName] = int(label) if label else 1
     for structFile, labelsDict in multiLabelFile.items():
         planC = pc.loadNiiStructure(structFile, 0, planC, labelsDict)
@@ -250,6 +239,18 @@ def getFractionation(patientInfo):
 #============================================
 # Helper functions to read CSVs
 #============================================
+def _resolveFile(dataDir, pattern, column):
+    """Return the file in dataDir matching pattern (name or wildcard)."""
+    if pattern is None:
+        raise ValueError(f"No '{column}' given for this patient in plan_structures_csv.")
+    matches = sorted(glob.glob(os.path.join(dataDir, pattern)))
+    if len(matches) != 1:
+        raise ValueError(
+            f"'{column}' pattern {pattern!r} matched {len(matches)} files in "
+            f"{dataDir} (expected exactly one): {matches}")
+    return matches[0]
+
+
 def _textField(patientInfo, column):
     if patientInfo is None or column not in patientInfo:
         return None

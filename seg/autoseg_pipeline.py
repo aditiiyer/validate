@@ -2,20 +2,13 @@
 - Check install status, install missing AI models, then run+derive+export+log per patient.
 """
 
-import os
 import shutil
 from pathlib import Path
 
-import pandas as pd
-
-from cerr import plan_container as pc
 from cerr.ai_models import install_utils, run_utils
-from cerr.dcm_export import rtstruct_iod
 
-from validate.src import model_registry
-from validate.src import structures
-from validate.src import logging as autoseg_log
-from validate.src.data_import import discoverPatients, loadPatientInfo, getDoseIndex
+from validate.seg import model_registry
+from validate.seg import structures
 
 
 def checkModelsForStructures(structNames):
@@ -76,133 +69,37 @@ def installMissingModels(modelNums, installBaseDir, progressCallback=None, force
     return results
 
 
-def runAIModel(modelNum, dicomDir, sessionDir,
+def runAIModel(modelNum, record, sessionDir,
                progressCallback=None):
-    """Run one AI model on one patient's DICOM directory.
+    """Run one AI model on one patient (DICOM, NIfTI or NRRD).
 
-    The model's own post-processing script (cerr/ai_models/post/*.py)
-    exports its raw output as an RTSTRUCT into dicomDir, per the
-    cerr.ai_models convention -- so afterward, reloading the patient's
-    planC from dicomDir picks up those raw structures generically, without
-    depending on run_utils.main()'s return value.
+    Args:
+        modelNum (int): AI model number.
+        record (validate.core.data_capsule.PatientRecord): Patient info datastruct.
+                For DICOM, scans are in record.file_info.data_dir.
+                For NIfTI/NRRD, teh scan is at record.file_info.scan_file.
+        sessionDir (str): working folder for this run.
+        progressCallback (callable): optional f(message) status hook.
+
+    The model writes its outputs into record.file_info.data_dir.
     """
     installed, installInfo = model_registry.getInstallInfo(modelNum)
     if not installed:
         raise RuntimeError(f"Model {modelNum} is not installed.")
     installDir = installInfo["installDir"]
 
-    userInputs = {"input_path": dicomDir, "output_path": dicomDir,
+    dataDir = record.file_info.data_dir
+    scanFile = record.file_info.scan_file
+    if scanFile is None:
+        inputDir = dataDir
+    else:
+        stagedDir = Path(sessionDir) / "scan_cpy"
+        stagedDir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path(dataDir) / scanFile, stagedDir / Path(scanFile).name)
+        inputDir = str(stagedDir)
+
+    userInputs = {"input_path": inputDir, "output_path": dataDir,
                  "session_path": sessionDir}
     if progressCallback:
         progressCallback(f"Applying {installInfo['modelName']} AI segmentation model...")
     run_utils.main(modelNum, installDir, userInputs)
-
-
-def runAutoSegmentationForCohort(cohortDir, autosegStructNames, installBaseDir,
-                                 planName,taskLog, progressCallback=None, overwrite=False):
-    """Auto-segment autosegStructNames for every patient in cohortDir.
-
-    For each patient, each distinct AI model needed is run at most once.
-    Each structure in the dosimetric model is then derived, exported (RTSTRUCT), and logged.
-    Skips (patient, AI model) pairs already fully covered by the availability log unless overwrite=True.
-
-    Args:
-        cohortDir (str): cohort directory (one DICOM subdir per patient).
-        autosegStructNames (list[str]): required structure names to
-            auto-segment (must all have a registered derivation --
-            call checkModelsForStructures first to confirm).
-        installBaseDir (str): directory AI models are installed under.
-        planName (str, pandas.DataFrame, or None): Per-patient info DataFrame
-            Used to resolve dose/plan index (see validate.src.data_import.loadPatientInfo).
-        taskLog (validate.src.logging.TaskLog): run log to write to.
-        progressCallback (callable): optional f(message) stage hook.
-        overwrite (bool): if True, re-run even if already logged available.
-
-    Returns:
-        dict: {patientId: {structName: "ok"|"error: <message>"}}
-    """
-    if planName is None:
-        patientInfoDf = None
-    elif isinstance(planName, pd.DataFrame):
-        patientInfoDf = planName
-    else:
-        patientInfoDf = loadPatientInfo(planName)
-
-    # Group AI-backed structures by aiModelNum
-    # Skip for structires segmented using classical methods.
-    # -- deriveFn runs its own model internally -- so each gets its own group.
-    structsByModel = {}
-    for structName in autosegStructNames:
-        derivation = structures.getDerivation(structName)
-        isClassic = derivation.type == 'classic'
-        groupKey = ('classic', structName) if isClassic else derivation.aiModelNum
-        structsByModel.setdefault(groupKey, []).append((structName, derivation))
-
-    patients = discoverPatients(cohortDir)
-    results = {}
-
-    # Loop oer pts
-    for patientId, dicomDir in patients:
-        patientResult = {}
-        planC = None
-        planNum = None
-        # Get metadata
-        patientInfo = (patientInfoDf.loc[patientId]
-                       if patientInfoDf is not None and patientId in patientInfoDf.index
-                       else None)
-        # Run AI-models before classic ones
-        orderedGroups = sorted(structsByModel.items(),
-                               key=lambda kv: kv[1][0][1].type == 'classic')
-        for groupKey, structEntries in orderedGroups:
-            firstDerivation = structEntries[0][1]
-            isClassic = firstDerivation.type == 'classic'
-            # aiModelName also doubles as the availability-log key; shared
-            # with _checkExistingAvailability via structures.getAvailabilityLogKey
-            # so the two never disagree on where a structure's log lives.
-            aiModelName = structures.getAvailabilityLogKey(structEntries[0][0])
-            needed = [(name, d) for name, d in structEntries
-                     if overwrite or not autoseg_log.isAvailable(
-                         cohortDir, aiModelName, patientId, name)]
-            # Check if already auto-segmented (autoseg log)
-            if not needed:
-                for name, _ in structEntries:
-                    patientResult[name] = "ok (cached)"
-                continue
-
-            #Otherwise:
-            sessionDir = Path(autoseg_log.logDir(cohortDir)) / "_sessions" / patientId / aiModelName
-            try:
-                if not isClassic:
-                    # Run required AI model
-                    runAIModel(groupKey, dicomDir, str(sessionDir), progressCallback)
-                if planC is None:
-                    planC = pc.loadDcmDir(dicomDir)
-                else:
-                    planC = pc.loadDcmDir(dicomDir, initplanC=planC)
-                if planNum is None:
-                    planNum = getDoseIndex(planC, patientId=patientId, patientInfo=patientInfo)
-
-                # Apply post-processing operations
-                for structName, derivation in needed:
-                    structNum, planC = derivation.deriveFn(planC, planNum)
-                    outFile = os.path.join(
-                        dicomDir, f"{patientId}_{structName}_autoseg.dcm")
-                    rtstruct_iod.create([structNum], outFile, planC,
-                                        {"seriesDescription": "AI Generated (validate)"})
-                    # Update autoseg log
-                    autoseg_log.recordAvailability(cohortDir, aiModelName,
-                                                   patientId, structName)
-                    patientResult[structName] = "ok"
-            except Exception as exc:
-                # Record errors in task log
-                taskLog.error(patientId, f"{aiModelName}: {exc}")
-                for structName, _ in needed:
-                    patientResult[structName] = f"error: {exc}"
-            finally:
-                shutil.rmtree(sessionDir, ignore_errors=True)
-
-        results[patientId] = patientResult
-        if progressCallback:
-            progressCallback(f"Auto-segmented {patientId}")
-
-    return results

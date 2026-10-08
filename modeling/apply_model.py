@@ -38,8 +38,8 @@ def getFractionationInputs(fxSize, fxNum, correctionType):
     value the model's correction needs is available.
 
     Args:
-        fxSize (float or None): fraction size, from data_import.getFractionation.
-        fxNum (float or None): fraction number, from data_import.getFractionation.
+        fxSize (float or None): fraction size, from data_io.read_inputs.getFractionation.
+        fxNum (float or None): fraction number, from data_io.read_inputs.getFractionation.
         correctionType: result of getFractionCorrectionType() for the model
             being applied.
 
