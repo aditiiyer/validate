@@ -3,7 +3,7 @@
 Combines patient discovery with the per-patient CSV inputs (plan_structures_csv,
 predictors_csv, outcomes_csv; see data_import for their formats). Values only
 known once a patient's data is loaded (dose index, computed predictors, NTCP)
-are left None.
+are initialized to None.
 """
 
 import os
@@ -15,22 +15,31 @@ from validate.data_io.read_inputs import (discoverPatients, inferFileFormat, loa
                                           getFractionation, _resolveFile, _textField,
                                           _numericField)
 
-def buildCapsule(analysisPath):
+def buildCapsule(analysisPath, errorLog=None):
     """Read the analysis settings and build every patient's record.
 
     Args:
         analysisPath (str): path to the analysis settings file.
+        errorLog (validate.logs.ErrorLog or None): see buildPatientRecords.
 
     Returns:
         DataCapsule: analysis-level settings with patients filled in.
     """
     dataCapsule = toDataCapsule(analysisPath)
-    dataCapsule.patients = {record.pt_id: record for record in buildPatientRecords(dataCapsule)}
+    records = buildPatientRecords(dataCapsule, errorLog=errorLog)
+    dataCapsule.patients = {record.pt_id: record for record in records}
     return dataCapsule
 
 
-def buildPatientRecords(dataCapsule):
+def buildPatientRecords(dataCapsule, errorLog=None):
     """Build one PatientRecord per patient, using dataCapsule's cohort-level defaults where needed.
+
+    Args:
+        dataCapsule (DataCapsule): analysis-level settings.
+        errorLog (validate.logs.ErrorLog or None): if given, a patient whose
+            record can't be built (e.g. empty folder, unresolvable file
+            pattern, non-numeric CSV cell) is written to it and skipped, so
+            the rest of the cohort continues. If None, the error is raised.
 
     Returns:
         list of PatientRecord, sorted by pt_id.
@@ -52,9 +61,17 @@ def buildPatientRecords(dataCapsule):
             if unmatched:
                 warnings.warn(f"{csvName} has IDs with no matching patient: {unmatched}")
 
-    return [buildPatientRecord(ptId, dataDir, dataCapsule.structures,
-                               _row(planDf, ptId), _row(predictorsDf, ptId), _row(outcomesDf, ptId))
-            for ptId, dataDir in patients]
+    records = []
+    for ptId, dataDir in patients:
+        try:
+            records.append(buildPatientRecord(ptId, dataDir, dataCapsule.structures,
+                                              _row(planDf, ptId), _row(predictorsDf, ptId),
+                                              _row(outcomesDf, ptId)))
+        except Exception as exc:
+            if errorLog is None:
+                raise
+            errorLog.error(ptId, f"Could not build patient record; skipped: {exc}")
+    return records
 
 
 def buildPatientRecord(ptId, dataDir, recipes, planRow=None, predictorsRow=None, outcomesRow=None):

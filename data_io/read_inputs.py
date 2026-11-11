@@ -46,13 +46,19 @@ Optional inputs:
 import os
 import glob
 import json
+import warnings
 import pandas as pd
 from pydicom.misc import is_dicom
 
 from cerr import plan_container as pc
 from cerr.roe import dosimetric_models as doseModels
 
+from validate.core.analysis import FILE_NAME as SETTINGS_FILE_NAME
+from validate.logs import LOG_DIR_NAME, TASK_LOG_NAME
+
 IMAGE_FILE_EXTENSIONS = (".nii", ".nii.gz", ".nrrd")
+# validate's own outputs, which may sit in the cohort folder when it is also the analysis folder
+VALIDATE_OUTPUT_NAMES = {LOG_DIR_NAME, SETTINGS_FILE_NAME, TASK_LOG_NAME}
 PLAN_INFO_COLUMNS = ["ID", "Plan name", "Prescribed dose (Gy)",
                      "Fraction size (Gy)", "Fraction number"]
 
@@ -64,12 +70,15 @@ def discoverPatients(cohortDir):
         cohortDir (str): Path to the parent directory holding DICOM/ NIfTI/NRRD data.
 
     Returns:
-        list of (patientId, dicomDir) tuples, sorted by patientId. Leading-
-        underscore subdirectories (e.g. "_autoseg_logs") are excluded --
-        those hold validate's own logs, not patient data.
+        list of (patientId, dicomDir) tuples, sorted by patientId. validate's
+        own outputs (VALIDATE_OUTPUT_NAMES: the log folder, settings file and
+        task log) are skipped, since the cohort folder may also be the
+        analysis folder.
     """
     entries = []
     for name in sorted(os.listdir(cohortDir)):
+        if name in VALIDATE_OUTPUT_NAMES:
+            continue
         path = os.path.join(cohortDir, name)
         if os.path.isdir(path):
             entries.append((name, path))
@@ -186,9 +195,10 @@ def loadPatientInfo(csvPath):
 def getDoseIndex(planC, patientId=None, patientInfo=None):
     """Return the index of the dose to use for this patient.
 
-    If planC has exactly one dose, that dose is used. Otherwise patientInfo
-    (a row of loadPatientInfo's result) must supply a "Plan name" value
-    (RTDOSE file name), matched against each dose's doseFileName.
+    If planC has no dose, None is returned. If it has exactly one dose, that
+    dose is used. Otherwise patientInfo (a row of loadPatientInfo's result)
+    must supply a "Plan name" value (RTDOSE file name), matched against each
+    dose's doseFileName.
 
     Args:
         planC (cerr.plan_container.PlanC): patient's plan container.
@@ -198,7 +208,7 @@ def getDoseIndex(planC, patientId=None, patientInfo=None):
     """
     numDoses = len(planC.dose)
     if numDoses == 0:
-        raise ValueError("No dose found in plan.")
+        return None
     if numDoses == 1:
         return 0
 
@@ -288,5 +298,11 @@ def _csvFrxNum(patientInfo):
         return frxNum
     rx = _numericField(patientInfo, "Prescribed dose (Gy)")
     frxSize = _numericField(patientInfo, "Fraction size (Gy)")
-    return rx / frxSize if rx is not None and frxSize else None
+    if rx is None or not frxSize:
+        return None
+    frxNum = rx / frxSize
+    if abs(frxNum - round(frxNum)) > 1e-6:
+        warnings.warn(f"{patientInfo.name}: fraction number derived from 'Prescribed dose (Gy)' "
+                      f"/ 'Fraction size (Gy)' = {rx:g} / {frxSize:g} = {frxNum:.3f} is not a whole number.")
+    return frxNum
 

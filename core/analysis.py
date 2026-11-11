@@ -10,6 +10,7 @@ analysis.yaml:
       outcomes_csv: null
     compute:
       device: cpu                  # cpu | gpu
+      ai_install_dir: /models      # required if any structure has source: ai
     model:
       name: Xerostomia (grade 2+)  # ROE model name
       file: /path/to/Xerostomia (grade 2+).json   # filled in automatically for built-in models
@@ -32,7 +33,7 @@ FILE_NAME = "analysis.yaml"
 TOP_LEVEL_KEYS = {"input", "compute", "model", "structures"}
 SECTION_KEYS = {
     "input": {"start_from", "data_dir", "predictors_csv", "plan_structures_csv", "outcomes_csv"},
-    "compute": {"device"},
+    "compute": {"device", "ai_install_dir"},
     "model": {"name", "file"},
 }
 RAW_DATA_FORMATS = ("dicom", "nifti", "nrrd")
@@ -49,6 +50,9 @@ STRUCTURES_REQUIRED_KEYS = {
 def checkSettings(analysisDict):
     """Check analysis.yaml's contents."""
     problems = []
+    if not isinstance(analysisDict, dict):
+        found = "it is empty" if analysisDict is None else f"found {type(analysisDict).__name__}"
+        raise ValueError(f"Invalid analysis.yaml: expected a mapping of settings, but {found}.")
     inputs = analysisDict.get("input") or {}
     compute = analysisDict.get("compute") or {}
     structures = analysisDict.get("structures") or {}
@@ -92,6 +96,10 @@ def checkSettings(analysisDict):
         if inputs.get("data_dir") is None:
             problems.append(f"input.data_dir is required when start_from is {startFrom!r}.")
 
+    if any((recipe or {}).get("source") == "ai" for recipe in structures.values()) \
+            and compute.get("ai_install_dir") is None:
+        problems.append("compute.ai_install_dir is required when any structure has source 'ai'.")
+
     # Structure recipes
     for structName, recipe in structures.items():
         recipe = recipe or {}
@@ -124,7 +132,7 @@ def toAnalysisDict(dataCapsule):
             "plan_structures_csv": dataCapsule.plan_structures_csv,
             "outcomes_csv": dataCapsule.outcomes_csv,
         },
-        "compute": {"device": dataCapsule.device},
+        "compute": {"device": dataCapsule.device, "ai_install_dir": dataCapsule.ai_install_dir},
         "model": {"name": model.get("name"), "file": model["file"]},
         "structures": dataCapsule.structures,
     }
@@ -170,6 +178,7 @@ def toDataCapsule(path):
         start_from=inputs["start_from"],
         model=analysisDict["model"],
         device=analysisDict.get("compute", {}).get("device", "cpu"),
+        ai_install_dir=analysisDict.get("compute", {}).get("ai_install_dir"),
         cohort_dir=inputs.get("data_dir"),
         predictors_csv=inputs.get("predictors_csv"),
         plan_structures_csv=inputs.get("plan_structures_csv"),

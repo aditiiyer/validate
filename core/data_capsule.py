@@ -1,4 +1,4 @@
-"""Defines Validate's data structure, DataCapsule, created per analysis.
+"""Defines Validate's data structure, "DataCapsule", created per analysis.
 It holds analysis-level choices plus one PatientRecord per patient.
 """
 
@@ -43,6 +43,7 @@ class DataCapsule:
     start_from: str                                                    # dicom | nifti | nrrd | predictors
     model: dict[str, str | None]                                       # {name, file}: ROE model name and its JSON path
     device: str = "cpu"                                                # cpu | gpu
+    ai_install_dir: str | None = None                                  # Folder AI models are installed under; required if any structure has source "ai"
     cohort_dir: str | None = None                                      # If beginning from raw data, otherwise None
     predictors_csv: str | None = None                                  # If pre-computed predictors are input via CSV, otherwise None
     plan_structures_csv: str | None = None                             # Optional input CSV specifying structure names, dose plan ID, and fractionation information
