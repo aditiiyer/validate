@@ -3,6 +3,9 @@ Contains functions to:
 - Transform raw AI outputs to the structures required to run a dosimetric model including
 operations such as union, intersection, diff etc.
 - Identify the structures required by a dosimetric model, and apply a user-supplied name mapping.
+
+Structures with derivation recipes (STRUCTURE_REGISTRY, end of this file): Oral cavity, Submandibular glands,
+SCRR, Parotids-SCRR
 """
 
 import json
@@ -10,7 +13,6 @@ import warnings
 from dataclasses import dataclass
 from typing import Callable
 
-import cerr.dataclasses.scan as cerrScan
 import cerr.dataclasses.structure as cerrStr
 from cerr.segmentation import models as segModels
 from cerr.roe import dosimetric_models as doseModels
@@ -32,17 +34,15 @@ def getDerivation(structName):
     return STRUCTURE_REGISTRY.get(structName)
 
 
-def getAvailabilityLogKey(structName):
-    """Return the autoseg_log availability-log key for structName, or
-    None if no derivation is registered.
-    Keys:
-    AI-backed structures: aiModelName
-    classic-type structures: classic_<structure>
-    """
-    derivation = getDerivation(structName)
-    if derivation is None:
-        return None
-    return f"classic_{structName}" if derivation.type == "classic" else derivation.aiModelName
+def listReqdAISegModels(modelFile):
+    """Names of the AI models whose outputs a dosimetric model's structures are
+    derived from (by their registered recipes), in the order the structures are listed."""
+    aiModels = []
+    for structName in getRequiredStructures(modelFile):
+        derivation = getDerivation(structName)
+        if derivation and derivation.aiModelName and derivation.aiModelName not in aiModels:
+            aiModels.append(derivation.aiModelName)
+    return aiModels
 
 
 def getRequiredAiModels(structNames):
@@ -142,35 +142,30 @@ def _getIndex(planC, strName):
     return matches[0]
 
 
-def deriveOralCavity(planC, planNum):
+def deriveOralCavity(planC, scanNum):
     structNum = _getIndex(planC,'Oral cavity')
     return structNum, planC
 
 
-def deriveSubmandibularGlands(planC, planNum):
+def deriveSubmandibularGlands(planC, scanNum):
     outStructName = 'Submandibular glands'
     planC = cerrStr.structUnion(['Left submandible','Right submandible'], planC, unionStructName=outStructName)
     structNum = len(planC.structure)-1
     return structNum, planC
 
 
-def deriveSCRR(planC, planNum=None):
+def deriveSCRR(planC, scanNum):
     modelName = 'SCRR'
     paramDict = {'structNameDict': {'parotid': ['Left parotid', 'Right parotid'],
                                     'masseter': ['Left masseter', 'Right masseter'],
                                     'mandible': ['Mandible']}}
-    if planNum is None:
-        scanNum = 0
-        warnings.warn("No dose plan given. Using the first scan by default.")
-    else:
-        scanNum = cerrScan.getScanNumFromUID(planC.dose[planNum].assocScanUID, planC)
     __, __, planC = segModels.run(modelName, planC, scanNum, paramDict)
     planC = cerrStr.structUnion(['leftSCRR', 'rightSCRR'], planC, unionStructName=modelName)
     structNum = len(planC.structure) - 1
     return structNum, planC
 
 
-def deriveParotidsSCRR(planC, planNum):
+def deriveParotidsSCRR(planC, scanNum):
     outStructName = 'Parotids-SCRR'
     planC = cerrStr.structUnion(['Left Parotid', 'Right Parotid'], planC, unionStructName='Parotids')
     planC = cerrStr.structDiff('Parotids','SCRR', planC, diffStructName=outStructName)
@@ -181,7 +176,7 @@ def deriveParotidsSCRR(planC, planNum):
 #---------------------------------------------------------------
 # Build registry of structures required across dosimetric models
 #---------------------------------------------------------------
-STRUCTURE_REGISTRY["Oral cavity"] = StructureDerivation(aiModelNum=6, aiModelName="CT_HeadAndNeck_OARs", deriveFn=deriveOralCavity, type='AI')
-STRUCTURE_REGISTRY["Submandibular glands"] = StructureDerivation(aiModelNum=6, aiModelName="CT_HeadAndNeck_OARs", deriveFn=deriveSubmandibularGlands, type='AI')
+STRUCTURE_REGISTRY["Oral cavity"] = StructureDerivation(aiModelNum=3, aiModelName="CT_HeadAndNeck_OARs", deriveFn=deriveOralCavity, type='AI')
+STRUCTURE_REGISTRY["Submandibular glands"] = StructureDerivation(aiModelNum=3, aiModelName="CT_HeadAndNeck_OARs", deriveFn=deriveSubmandibularGlands, type='AI')
 STRUCTURE_REGISTRY["SCRR"] = StructureDerivation(aiModelNum=None, aiModelName=None, deriveFn=deriveSCRR, type='classic')
-STRUCTURE_REGISTRY["Parotids-SCRR"] = StructureDerivation(aiModelNum=6, aiModelName="CT_HeadAndNeck_OARs", deriveFn=deriveParotidsSCRR, type='AI')
+STRUCTURE_REGISTRY["Parotids-SCRR"] = StructureDerivation(aiModelNum=3, aiModelName="CT_HeadAndNeck_OARs", deriveFn=deriveParotidsSCRR, type='AI')

@@ -5,7 +5,7 @@
 import shutil
 from pathlib import Path
 
-from cerr.ai_models import install_utils, run_utils
+from cerr.ai_models import install_utils, run_utils, model_list
 
 from validate.seg import model_registry
 from validate.seg import structures
@@ -60,7 +60,8 @@ def installMissingModels(modelNums, installBaseDir, progressCallback=None, force
         try:
             if progressCallback:
                 progressCallback(f"Installing model {modelNum}...")
-            modelName = install_utils.validateModelNum(modelNum)
+            _, modelEntry = model_list.resolveModel(modelNum)
+            modelName = modelEntry["name"]
             install_utils.main(modelNum, installBaseDir)
             model_registry.recordInstall(modelNum, modelName, installBaseDir)
             results.append((modelNum, True, ""))
@@ -70,7 +71,7 @@ def installMissingModels(modelNums, installBaseDir, progressCallback=None, force
 
 
 def runAIModel(modelNum, record, sessionDir,
-               progressCallback=None):
+               progressCallback=None, outputDir=None):
     """Run one AI model on one patient (DICOM, NIfTI or NRRD).
 
     Args:
@@ -80,8 +81,8 @@ def runAIModel(modelNum, record, sessionDir,
                 For NIfTI/NRRD, teh scan is at record.file_info.scan_file.
         sessionDir (str): working folder for this run.
         progressCallback (callable): optional f(message) status hook.
-
-    The model writes its outputs into record.file_info.data_dir.
+        outputDir (str or None): folder the model writes its outputs to.
+            Defaults to the patient's folder, record.file_info.data_dir.
     """
     installed, installInfo = model_registry.getInstallInfo(modelNum)
     if not installed:
@@ -98,7 +99,7 @@ def runAIModel(modelNum, record, sessionDir,
         shutil.copy2(Path(dataDir) / scanFile, stagedDir / Path(scanFile).name)
         inputDir = str(stagedDir)
 
-    userInputs = {"input_path": inputDir, "output_path": dataDir,
+    userInputs = {"input_path": inputDir, "output_path": str(outputDir) if outputDir else dataDir,
                  "session_path": sessionDir}
     if progressCallback:
         progressCallback(f"Applying {installInfo['modelName']} AI segmentation model...")
