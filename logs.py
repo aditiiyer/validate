@@ -1,18 +1,19 @@
-"""Maintain logs for the auto-segmentation pipeline.
+"""Maintain the logs of an analysis.
 
-1. Structure-availability log: one CSV per AI model, stored in
-the analysis directory, recording (patient_id, structure_name) for every
-structure exported to DICOM for that patient. Review to avoid re-running models.
+1. Error log: Text file recording per-patient errors only (one line each), one per invocation.
 
-2. Error log: Text file recording per-patient errors only (one line each).
-
-3. Task log: task_log.yaml in the analysis directory, written only by the tool.
-   Holds the settings hash (decides whether a run may resume), one entry per
-   invocation with its provenance ID, software versions and hardware, and
-   per-patient results.
+2. Task log: task_log.yaml in the analysis directory, written only by the tool.
+   Holds one settings hash per tab (decides whether that tab's runs may resume),
+   one entry per invocation with the tab that ran, its provenance ID, software
+   commits and hardware, and per-patient results:
+       patients:
+         pt001:
+           segment: {<AI model>: {status, run, files, labels, warnings}}
+           ntcp:    {status, value | message, run, warnings}
 """
 
 import csv
+import fnmatch
 import hashlib
 import json
 import os
@@ -21,55 +22,26 @@ import subprocess
 import warnings
 from contextlib import contextmanager
 from datetime import datetime
-from importlib import metadata
 from pathlib import Path
 
 import yaml
 
+from validate.core.analysis import tabSettings
+
 LOG_DIR_NAME = "_autoseg_logs"
 TASK_LOG_NAME = "task_log.yaml"
+SUMMARY_NAME = "segment_summary.csv"
+
+TABS = ("segment", "model")
+# The section of each patient's entry holding a tab's results
+TAB_SECTIONS = {"segment": "segment", "model": "ntcp"}
+SUMMARY_COLUMNS = ["patient_id", "ai_model", "status", "run", "file", "label", "structure", "message"]
 
 
 def logDir(analysisDir):
     d = Path(analysisDir) / LOG_DIR_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def _safeName(name):
-    return "".join(c if c.isalnum() or c in "-_." else "_" for c in str(name))
-
-
-def availabilityLogPath(analysisDir, aiModelName):
-    return logDir(analysisDir) / f"{_safeName(aiModelName)}_availability.csv"
-
-
-def readAvailability(analysisDir, aiModelName):
-    """Return the {(patient_id, structure_name)} set logged for aiModelName."""
-    path = availabilityLogPath(analysisDir, aiModelName)
-    entries = set()
-    if path.exists():
-        with open(path, "r", newline="") as f:
-            for row in csv.DictReader(f):
-                entries.add((row["patient_id"], row["structure_name"]))
-    return entries
-
-
-def isAvailable(analysisDir, aiModelName, patientId, structureName):
-    return (patientId, structureName) in readAvailability(analysisDir, aiModelName)
-
-
-def recordAvailability(analysisDir, aiModelName, patientId, structureName):
-    path = availabilityLogPath(analysisDir, aiModelName)
-    isNew = not path.exists()
-    if not isNew and isAvailable(analysisDir, aiModelName, patientId, structureName):
-        return
-    with open(path, "a", newline="") as f:
-        writer = csv.writer(f)
-        if isNew:
-            writer.writerow(["patient_id", "structure_name", "logged_at"])
-        writer.writerow([patientId, structureName,
-                         datetime.now().isoformat(timespec="seconds")])
 
 
 class ErrorLog:
@@ -92,60 +64,91 @@ class ErrorLog:
 #============================================
 # Task log (task_log.yaml)
 #============================================
-def settingsHash(settingsPath):
-    """SHA-256 of the analysis settings in canonical form, so formatting,
-    key order and comments in the settings file don't change it."""
+class SettingsChangedError(ValueError):
+    """A tab's settings changed since its results in task_log.yaml were made.
+    Its results can be cleared (clearResults) so the tab can run again."""
+
+    def __init__(self, tab, path):
+        self.tab = tab
+        super().__init__(f"The {tab} settings changed since the {tab} results in {path} were made. "
+                         f"Clear the {tab} results to run with the new settings.")
+
+
+def settingsHashes(settingsPath):
+    """{tab: SHA-256 of the settings that tab's results depend on (core.analysis.tabSettings)},
+    in canonical form, so formatting, key order and comments don't change them."""
     with open(settingsPath, "r") as f:
         settings = yaml.safe_load(f)
-    return _sha256(_canonical(settings))
+    return {tab: _sha256(_canonical(tabSettings(settings, tab))) for tab in TABS}
 
 
-def startRun(analysisDir, settingsPath, modelFile, errorLogPath=None):
-    """Open task_log.yaml for a new invocation.
+def readTaskLog(analysisDir):
+    """Return the task log in analysisDir, or None if there is none yet.
 
-    Creates task_log.yaml, or resumes it if its settings hash matches the
-    current settings file. Appends this invocation's provenance, hardware and
-    error log file.
+    Raises:
+        ValueError: task_log.yaml can't be read, isn't a task log, or was
+            written by an earlier version of validate.
+    """
+    path = Path(analysisDir) / TASK_LOG_NAME
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r") as f:
+            taskLog = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path} can't be read as YAML: {exc}") from None
+    if not isinstance(taskLog, dict) or not {"settings_hash", "runs", "patients"} <= taskLog.keys():
+        raise ValueError(f"{path} is empty or isn't a validate task log. It may have been "
+                         f"edited or damaged; restore it, or move it aside to start a new "
+                         f"task log in this folder.")
+    if not isinstance(taskLog["settings_hash"], dict):
+        raise ValueError(f"{path} was written by an earlier version of validate; "
+                         f"move it aside to start a new task log in this folder.")
+    return taskLog
+
+
+def startRun(analysisDir, settingsPath, tab, errorLogPath=None, details=None):
+    """Open task_log.yaml for a new invocation of a tab.
+
+    Creates task_log.yaml, or resumes it if the tab's settings hash matches the
+    current settings (or the tab hasn't run yet). Appends this invocation's tab,
+    provenance, device, hardware and error log file.
 
     Args:
         analysisDir (str): analysis folder holding task_log.yaml.
         settingsPath (str): path to the analysis settings file.
-        modelFile (str): path to the ROE model JSON used.
+        tab (str): "segment" or "model".
         errorLogPath (str or None): this invocation's error log; recorded
             relative to analysisDir.
+        details (dict or None): tab-specific provenance added to the software
+            provenance (see modelFileProvenance, aiModelProvenance).
 
     Returns:
         (taskLog, runIndex): the task log dict and this invocation's index in taskLog["runs"].
 
     Raises:
-        ValueError: task_log.yaml exists but can't be read, isn't a task log,
-            or was written for different settings.
+        SettingsChangedError: the tab's settings changed since its results were made.
+        ValueError: task_log.yaml exists but can't be read or isn't a task log.
     """
-    currentHash = settingsHash(settingsPath)
-    path = Path(analysisDir) / TASK_LOG_NAME
-    if path.exists():
-        try:
-            with open(path, "r") as f:
-                taskLog = yaml.safe_load(f)
-        except yaml.YAMLError as exc:
-            raise ValueError(f"{path} can't be read as YAML: {exc}") from None
-        if not isinstance(taskLog, dict) or not {"settings_hash", "runs", "patients"} <= taskLog.keys():
-            raise ValueError(f"{path} is empty or isn't a validate task log. It may have been "
-                             f"edited or damaged; restore it, or move it aside to start a new "
-                             f"task log in this folder.")
-        if taskLog["settings_hash"] != currentHash:
-            raise ValueError(
-                f"{path} was written for different analysis settings; "
-                f"use a new analysis folder for these settings.")
-    else:
-        taskLog = {"settings_hash": currentHash, "runs": [], "patients": {}}
+    currentHash = settingsHashes(settingsPath)[tab]
+    taskLog = readTaskLog(analysisDir)
+    if taskLog is None:
+        taskLog = {"settings_hash": {t: None for t in TABS}, "runs": [], "patients": {}}
+    recordedHash = taskLog["settings_hash"].get(tab)
+    if recordedHash is not None and recordedHash != currentHash:
+        raise SettingsChangedError(tab, Path(analysisDir) / TASK_LOG_NAME)
+    taskLog["settings_hash"][tab] = currentHash
 
-    provenance = _provenance(modelFile)
+    with open(settingsPath, "r") as f:
+        device = ((yaml.safe_load(f) or {}).get("compute") or {}).get("device", "cpu")
+    provenance = {**_provenance(), **(details or {})}
     taskLog["runs"].append({
+        "tab": tab,
         "started": _now(),
         "finished": None,
         "provenance_id": _sha256(_canonical({"settings_hash": currentHash, **provenance})),
         "provenance": provenance,
+        "device": device,
         "hardware": _hardware(),
         "error_log": os.path.relpath(errorLogPath, analysisDir) if errorLogPath else None,
     })
@@ -153,23 +156,92 @@ def startRun(analysisDir, settingsPath, modelFile, errorLogPath=None):
     return taskLog, len(taskLog["runs"]) - 1
 
 
-def recordPatient(analysisDir, taskLog, runIndex, patientId, section, results, computed=True,
-                  warningMessages=None):
-    """Store one patient's results under taskLog["patients"][patientId][section]
-    and write task_log.yaml.
+def clearResults(analysisDir, tab):
+    """Remove a tab's results from every patient in task_log.yaml and forget its
+    settings hash, so the tab can run with new settings. Runs (provenance) are kept.
 
-    The patient's "run" and "warnings" are updated only if computed is True, so
-    results reused from an earlier run keep pointing at the run that made them.
+    Returns:
+        dict or None: the updated task log, or None if there is none.
     """
-    entry = taskLog["patients"].setdefault(patientId, {})
-    entry[section] = results
-    if computed:
-        entry["run"] = runIndex
-        if warningMessages:
-            entry["warnings"] = list(warningMessages)
-        else:
-            entry.pop("warnings", None)
+    taskLog = readTaskLog(analysisDir)
+    if taskLog is None:
+        return None
+    section = TAB_SECTIONS[tab]
+    for patientId in list(taskLog["patients"]):
+        entry = taskLog["patients"][patientId]
+        entry.pop(section, None)
+        if not entry:
+            del taskLog["patients"][patientId]
+    taskLog["settings_hash"][tab] = None
     writeTaskLog(analysisDir, taskLog)
+    return taskLog
+
+
+def recordResult(analysisDir, taskLog, runIndex, patientId, section, result, key=None,
+                 warningMessages=None):
+    """Store one patient's result and write task_log.yaml.
+
+    The result is stored under taskLog["patients"][patientId][section], or
+    [section][key] when key is given (e.g. the AI model's name under "segment"),
+    with the run that made it and any warnings.
+    """
+    result = {**result, "run": runIndex}
+    if warningMessages:
+        result["warnings"] = list(warningMessages)
+    entry = taskLog["patients"].setdefault(patientId, {})
+    if key is None:
+        entry[section] = result
+    else:
+        entry.setdefault(section, {})[key] = result
+    writeTaskLog(analysisDir, taskLog)
+
+
+def isSegmented(analysisDir, taskLog, patientId, aiModel):
+    """True if aiModel ran successfully for patientId and all its recorded output
+    files (relative to analysisDir) still exist."""
+    patient = ((taskLog or {}).get("patients") or {}).get(patientId) or {}
+    result = (patient.get("segment") or {}).get(aiModel) or {}
+    files = result.get("files") or []
+    return (result.get("status") == "ok" and bool(files)
+            and all((Path(analysisDir) / f).exists() for f in files))
+
+
+def generateSummary(analysisDir):
+    """Write segment_summary.csv in analysisDir from the task log's segment results:
+    one row per patient, AI model, output file and label.
+
+    Returns:
+        str: path to the CSV.
+
+    Raises:
+        FileNotFoundError: there is no task log in analysisDir yet.
+    """
+    taskLog = readTaskLog(analysisDir)
+    if taskLog is None:
+        raise FileNotFoundError(f"No {TASK_LOG_NAME} in {analysisDir}; run Segment first.")
+    rows = []
+    for patientId, patient in taskLog["patients"].items():
+        for aiModel, result in (patient.get("segment") or {}).items():
+            base = {"patient_id": patientId, "ai_model": aiModel, "status": result.get("status"),
+                    "run": result.get("run"), "message": result.get("message")}
+            files = result.get("files") or []
+            if not files:
+                rows.append(base)
+            for file in files:
+                fileLabels = [(label, name) for pattern, labels in (result.get("labels") or {}).items()
+                              if fnmatch.fnmatch(Path(file).name, pattern)
+                              for label, name in labels.items()]
+                if not fileLabels:
+                    rows.append({**base, "file": file})
+                for label, name in fileLabels:
+                    rows.append({**base, "file": file, "label": label, "structure": name})
+
+    path = Path(analysisDir) / SUMMARY_NAME
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    return str(path)
 
 
 def recordRunWarnings(analysisDir, taskLog, runIndex, warningMessages):
@@ -216,23 +288,64 @@ def writeTaskLog(analysisDir, taskLog):
     os.replace(tmpPath, path)
 
 
-def _provenance(modelFile):
-    validateDir = Path(__file__).resolve().parent
-    commit = _git(validateDir, "rev-parse", "HEAD")
-    changes = _git(validateDir, "status", "--porcelain", "--untracked-files=no")
-    try:
-        pycerrVersion = metadata.version("pycerr")
-    except metadata.PackageNotFoundError:
-        pycerrVersion = None
-    with open(modelFile, "rb") as f:
-        modelHash = hashlib.sha256(f.read()).hexdigest()
+#============================================
+# Provenance
+#============================================
+def modelFileProvenance(modelFile):
+    """Model-tab provenance: the hash of the dosimetric model file."""
+    return {"model_file_sha256": _fileSha256(modelFile)}
+
+
+def aiModelProvenance(aiModel, installDir, weightsSha256=None):
+    """Provenance of one AI model install: its number, name, install folder,
+    code commit (and whether it has uncommitted changes), and hashes of its
+    models.yaml and weights. weightsSha256 comes from the install record, since
+    hashing the weights on every run is slow."""
+    from cerr.ai_models import install_utils, model_list
+    modelNum, _ = model_list.resolveModel(aiModel)
+    modelName, repo, _ = install_utils.getModel(aiModel)
+    repoPath = install_utils.getRepoPath(repo, installDir)
+    modelsYaml = repoPath / "models.yaml"
     return {
-        "validate_commit": commit,
-        "user_modified": bool(changes) if commit else None,
-        "pycerr_version": pycerrVersion,
-        "model_file_sha256": modelHash,
+        "number": modelNum,
+        "name": modelName,
+        "install_dir": str(installDir),
+        "repo_commit": _git(repoPath, "rev-parse", "HEAD"),
+        "repo_user_modified": _userModified(repoPath),
+        "models_yaml_sha256": _fileSha256(modelsYaml) if modelsYaml.is_file() else None,
+        "weights_sha256": weightsSha256,
+    }
+
+
+def _provenance():
+    """Software provenance: validate's and pyCERR's git commits (and whether
+    either has uncommitted changes) and the Python version."""
+    import cerr
+    validateDir = Path(__file__).resolve().parent
+    pycerrDir = Path(cerr.__file__).resolve().parent.parent
+    return {
+        "validate_commit": _git(validateDir, "rev-parse", "HEAD"),
+        "validate_user_modified": _userModified(validateDir),
+        "pycerr_commit": _git(pycerrDir, "rev-parse", "HEAD"),
+        "pycerr_user_modified": _userModified(pycerrDir),
         "python": platform.python_version(),
     }
+
+
+def _userModified(repoDir):
+    """True if repoDir's git checkout has uncommitted changes to tracked files,
+    None if it isn't a git checkout."""
+    if _git(repoDir, "rev-parse", "HEAD") is None:
+        return None
+    return bool(_git(repoDir, "status", "--porcelain", "--untracked-files=no"))
+
+
+def _fileSha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _hardware():

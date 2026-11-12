@@ -16,10 +16,10 @@ Design principles applied:
 from PyQt5 import QtGui
 from PyQt5.QtCore import Qt
 
-BASE_POINT_SIZE = 11
-HEADING_POINT_SIZE = 13
-GROUP_TITLE_POINT_SIZE = 22
-APP_TITLE_POINT_SIZE = 22
+BASE_POINT_SIZE = 10
+HEADING_POINT_SIZE = 11
+GROUP_TITLE_POINT_SIZE = 14
+APP_TITLE_POINT_SIZE = 14
 
 BG = "#1e2222"            # window background
 SURFACE = "#282e2e"        # panels / group boxes
@@ -75,25 +75,25 @@ QComboBox QAbstractItemView {{
 
 QPushButton {{
     background: {FIELD};
+    color: {TEXT};
     border: 1px solid {BORDER};
     border-radius: 4px;
     padding: 6px 16px;
 }}
 QPushButton:hover {{ background: {FIELD_ALT}; border-color: {ACCENT}; }}
-QPushButton:pressed {{ background: {BORDER}; }}
-QPushButton:disabled {{ color: {TEXT_MUTED}; background: {SURFACE}; border-color: {BORDER}; }}
+QPushButton:pressed {{ background: {ACCENT}; color: {ACCENT_TEXT}; border-color: {ACCENT}; }}
+QPushButton:disabled {{
+    background: {SURFACE};
+    color: {TEXT_MUTED};
+    border: 1px dashed {BORDER};
+}}
 
+/* "Primary" (theme.markPrimary) buttons are the same gray-idle/teal-pressed
+   states as any other button -- just bolder and roomier, as the CTA. */
 QPushButton#primaryButton {{
-    background: {ACCENT};
-    color: {ACCENT_TEXT};
-    border: 1px solid {ACCENT};
     font-weight: 600;
     padding: 8px 22px;
 }}
-QPushButton#primaryButton:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
-QPushButton#primaryButton:pressed {{ background: {ACCENT_PRESSED}; border-color: {ACCENT_PRESSED}; }}
-QPushButton#primaryButton:disabled {{
-    background: {SURFACE}; color: {TEXT_MUTED}; border-color: {BORDER}; }}
 
 QRadioButton, QCheckBox {{ background: transparent; spacing: 8px; }}
 
@@ -157,13 +157,15 @@ QTabWidget::pane {{ background: {BG}; border: 1px solid {BORDER}; border-radius:
 QTabBar::tab {{
     background: {SURFACE};
     color: {TEXT_MUTED};
-    padding: 8px 18px;
+    padding: 10px 28px;
+    margin-right: 4px;
+    min-width: 110px;
     border: 1px solid {BORDER};
     border-bottom: none;
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
 }}
-QTabBar::tab:selected {{ background: {BG}; color: {TEXT}; border-bottom: 2px solid {ACCENT}; }}
+QTabBar::tab:selected {{ background: {BG}; color: {TEXT}; border-bottom: 3px solid {ACCENT}; }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
 
 QScrollBar:vertical {{ background: {SURFACE}; width: 12px; }}
