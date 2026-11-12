@@ -43,11 +43,12 @@ class DataCapsule:
     start_from: str                                                    # dicom | nifti | nrrd | predictors
     model: dict[str, str | None]                                       # {name, file}: ROE model name and its JSON path
     device: str = "cpu"                                                # cpu | gpu
-    ai_install_dir: str | None = None                                  # Folder AI models are installed under; required if any structure has source "ai"
+    ai_models: list[str] = field(default_factory=list)                 # AI models to run (cerr.ai_models names)
+    ai_install_dir: str | None = None                                  # Folder AI models are installed under; required if ai_models is not empty
     cohort_dir: str | None = None                                      # If beginning from raw data, otherwise None
     predictors_csv: str | None = None                                  # If pre-computed predictors are input via CSV, otherwise None
     plan_structures_csv: str | None = None                             # Optional input CSV specifying structure names, dose plan ID, and fractionation information
     outcomes_csv: str | None = None                                    # Optional input CSV specifying patient outcomes
-    structures: dict[str, dict] = field(default_factory=dict)          # modelled structure mapped to a source (AI, classic, existing)
-                                                                       # and method of derivation (union, intersection, diff)
+    structures: dict[str, dict] = field(default_factory=dict)          # modelled structure mapped to a source: existing (with its
+                                                                       # name in the data) or derive (from AI outputs / classic recipe)
     patients: dict[str, PatientRecord] = field(default_factory=dict)   # List of PatientRecords
