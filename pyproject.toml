@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "validate"
+version = "0.1.0"
+description = "Apply NTCP models to a patient cohort and review their calibration and performance."
+authors = [
+  { name = "Aditi Iyer", email = "iyera@mskcc.org" },
+]
+requires-python = ">=3.9"
+dependencies = [
+    "pycerr",
+    "pandas",
+    "pydicom",
+    "PyYAML",
+    "PyQt5",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/aditiiyer/VALIDATE"
+
+[project.gui-scripts]
+validate = "validate.__main__:main"
+
+# The repository root is itself the "validate" package, so packages are listed
+# explicitly rather than auto-discovered.
+[tool.setuptools]
+package-dir = { "validate" = "." }
+packages = [
+    "validate",
+    "validate.core",
+    "validate.data_io",
+    "validate.evaluation",
+    "validate.gui",
+    "validate.modeling",
+    "validate.seg",
+]
