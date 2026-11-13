@@ -105,14 +105,16 @@ class SegmentTab(ManageRun):
         QVBoxLayout(reviewGroup).addLayout(buttonRow(self._buildLogButtons() + [viewOutputsBtn]))
         layout.addWidget(reviewGroup)
 
-        nextGroup = QGroupBox()
+        nextGroup = QGroupBox("Finish")
         summaryBtn = QPushButton("Generate summary")
         summaryBtn.setToolTip("Write segment_summary.csv: one row per patient, AI model, output file and label.")
         summaryBtn.clicked.connect(self._generateSummary)
         nextBtn = QPushButton("Next")
         nextBtn.setToolTip("Go to the Model tab.")
         nextBtn.clicked.connect(lambda: self.host.goToTab("model"))
-        QVBoxLayout(nextGroup).addLayout(buttonRow([summaryBtn, nextBtn]))
+        nextRow = buttonRow([summaryBtn])
+        nextRow.addWidget(nextBtn)      # after the stretch, so Next sits on the right
+        QVBoxLayout(nextGroup).addLayout(nextRow)
         layout.addWidget(nextGroup)
         layout.addStretch()
 
@@ -205,9 +207,6 @@ class SegmentTab(ManageRun):
             text, color = STATUS_TEXT[status]
             self._modelRows[name]["status"].setText(f"<span style='color:{color};'>●</span> {text}")
         ticked = self._tickedModels()
-        installStatuses = self._statuses(self.installDirEdit.text().strip())
-        allInstalled = bool(ticked) and all(installStatuses[name] == "installed" for name in ticked)
-        self.installBtn.setText("Reinstall" if allInstalled else "Install")
         self.installBtn.setEnabled(self.installRadio.isChecked() and bool(ticked))
 
     def _install(self):
@@ -216,12 +215,23 @@ class SegmentTab(ManageRun):
         if not installDir or not ticked:
             QMessageBox.warning(self, "Install", "Choose the folder to install into and the AI models to install.")
             return
-        reinstall = self.installBtn.text() == "Reinstall"
         statuses = self._statuses(installDir)
-        names = ticked if reinstall else [name for name in ticked if statuses[name] != "installed"]
+        names = [name for name in ticked if statuses[name] != "installed"]
+        reinstall = not names
+        if reinstall:
+            answer = QMessageBox.question(
+                self, "Install", f"Already installed in {installDir}:\n" + "\n".join(ticked) + "\n\nRe-install?",
+                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+            if answer != QMessageBox.Yes:
+                self.existingDirEdit.setText(installDir)
+                self.useExistingRadio.setChecked(True)
+                self._refreshStatus()
+                return
+            names = ticked
         nums = [self._modelRows[name]["num"] for name in names]
         self.installBtn.setEnabled(False)
         self.runBtn.setEnabled(False)
+        self.progressBar.reset()        # clear the last run's progress
         self.stageLabel.setText("Starting install...")
         self.installProgress.setVisible(True)
         self.installWorker = InstallWorker(nums, installDir, force=reinstall)

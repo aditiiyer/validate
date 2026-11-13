@@ -10,6 +10,7 @@ a new analysis in another folder (default <Data Dir>/analysis_<model>).
 """
 
 import os
+from importlib.metadata import version, PackageNotFoundError
 
 from PyQt5.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -33,8 +34,11 @@ TAB_NAMES = ["segment", "model", "review"]
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VALIDATE v0.1.0")
-        self.resize(1150, 800)
+        try:
+            self.setWindowTitle(f"VALIDATE v{version('validate')}")   # from pyproject.toml
+        except PackageNotFoundError:    # run from source without installing
+            self.setWindowTitle("VALIDATE")
+        self.resize(780, 830)
         self._loaded = None          # settings last read from analysis.yaml
         self._modelFiles = {}        # model name -> file, for models from loaded settings
         self._prevDefaultDir = ""    # the default analysis folder last filled in

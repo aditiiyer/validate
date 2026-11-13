@@ -4,7 +4,7 @@ models never blocks the GUI thread.
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from validate.run import applyModelToCohort, applyAutoSegToCohort
+from validate.run import applyModelToCohort, applyAutoSegToCohort, deriveStructuresForCohort
 from validate.seg.autoseg_pipeline import installMissingModels
 from validate.logs import ErrorLog
 
@@ -136,6 +136,24 @@ class ModelWorker(RunWorker):
             pandas.DataFrame: One row per patient: patient_id, ntcp, status, message.
         """
         return applyModelToCohort(
+            self.analysisDir, errorLog,
+            progressCallback=lambda done, total, pid: self.progress.emit(done, total, pid),
+            shouldStop=lambda: self._stopRequested)
+
+
+class DeriveWorker(RunWorker):
+    """Derives the modelled structures only, without NTCP (run.deriveStructuresForCohort)."""
+
+    def _run(self, errorLog):
+        """Derive the structures over the cohort.
+
+        Args:
+            errorLog (validate.logs.ErrorLog): Error log for this run.
+
+        Returns:
+            pandas.DataFrame: One row per patient: patient_id, status, message.
+        """
+        return deriveStructuresForCohort(
             self.analysisDir, errorLog,
             progressCallback=lambda done, total, pid: self.progress.emit(done, total, pid),
             shouldStop=lambda: self._stopRequested)

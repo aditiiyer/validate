@@ -18,7 +18,7 @@ from validate import logs
 
 # (settings key, label, help, details shown by the "i" button)
 CSV_FIELDS = [
-    ("plan_structures_csv", "Plan CSV:",
+    ("plan_structures_csv", "Plan info:",
      "Optional. Plan names, fractionation, existing structures (per case).",
      "One row per patient. Only ID is required.\n\n"
      "ID: patient folder name.\n"
@@ -28,8 +28,8 @@ CSV_FIELDS = [
      "Scan file, Dose file: file name or pattern (NIfTI/NRRD).\n"
      "<structure>: one column per structure the model needs, giving its name in the "
      "RTSTRUCT (DICOM), or its mask file or \"file:label\" (NIfTI/NRRD)."),
-    ("predictors_csv", "Predictors CSV:",
-     "Optional. Run from pre-computed predictors.",
+    ("predictors_csv", "Predictor values:",
+     "Optional input. Pass patient-specific clinical factors (age, gender etc.) or pre-computed predictors.",
      "One row per patient. Only ID is required.\n\n"
      "ID: patient ID.\n"
      "<structure> <metric>: one column per dose metric, named as in the model "
