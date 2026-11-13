@@ -2,13 +2,14 @@
 
 Segment tab: applyAutoSegToCohort runs the AI models in the settings and records their outputs.
 Model tab: applyModelToCohort derives the structures the dosimetric model needs (from the AI
-outputs or classic recipes), then computes NTCP.
+outputs or classic recipes), then computes NTCP. deriveStructuresForCohort only derives them.
 """
 
 import os
 import shutil
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -29,6 +30,7 @@ from validate.core import analysis
 from validate import logs
 
 RESULT_COLUMNS = ["patient_id", "ntcp", "status", "message"]
+DERIVE_COLUMNS = ["patient_id", "status", "message"]
 AUTOSEG_SUFFIX = "_autoseg"
 
 def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCallback=None, overwrite=False,
@@ -143,26 +145,11 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
     """
     settingsPath = os.path.join(analysisDir, analysis.FILE_NAME)
     try:
-        dataCapsule = analysis.toDataCapsule(settingsPath)
-        # Load patient-specific clinical factors (selected predictors)
-        predictorsDf = loadPatientInfo(dataCapsule.predictors_csv) if dataCapsule.predictors_csv else None
-
-        # Identify if using only pre-computed predictors (incl. DVH metrics)
-        fromPredictors = dataCapsule.start_from == "predictors"
-        if fromPredictors:
-            patients = [(ptId, None) for ptId in sorted(predictorsDf.index)]
-        else:
-            patients = discoverPatients(dataCapsule.cohort_dir)
-        modelFile = dataCapsule.model["file"]
-
-        # Required structure recipes and fractionation correction method
-        planStructuresCsv = dataCapsule.plan_structures_csv
-        patientInfoDf = loadPatientInfo(planStructuresCsv) if planStructuresCsv else None
+        inputs = _modelInputs(settingsPath)
+        predictorsDf, fromPredictors, patients = inputs.predictorsDf, inputs.fromPredictors, inputs.patients
+        modelFile, patientInfoDf = inputs.modelFile, inputs.patientInfoDf
+        recipes, deriveNames = inputs.recipes, inputs.deriveNames
         correctionType = getFractionCorrectionType(modelFile)
-        requiredStructs = getRequiredStructures(modelFile)
-        # Analysis-level recipes for the model's structures ("existing" ones may give a dataset name)
-        recipes = {name: dataCapsule.structures.get(name) or {} for name in requiredStructs}
-        deriveNames = _deriveOrder(name for name in requiredStructs if recipes[name].get("source") == "derive")
 
         taskLog, runIndex = logs.startRun(analysisDir, settingsPath, "model", errorLogPath=errorLog.path,
                                           details=logs.modelFileProvenance(modelFile))
@@ -178,6 +165,8 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
         ntcp = None
         status = "ok"
         message = ""
+        derivedFiles = {}   # {structName: exported file, relative to analysisDir}
+        derived = False     # True once the structures are derived
         with logs.collectWarnings() as patientWarnings:
             try:
                 if fromPredictors:
@@ -190,17 +179,11 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
                     patientInfo = _row(patientInfoDf, patientId)
                     record = buildPatientRecord(patientId, dataDir, recipes, planRow=patientInfo,
                                                 predictorsRow=_row(predictorsDf, patientId))
-                    planC = loadPatientPlanC(record)
-                    planC = _dropValidateOutputs(planC, analysisDir, taskLog, patientId)
-                    doseNum = getDoseIndex(planC, patientId=patientId, patientInfo=patientInfo)
+                    planC, doseNum = deriveModelStructures(record, patientInfo, recipes, deriveNames,
+                                                           analysisDir, taskLog, derivedFiles)
+                    derived = True
                     if doseNum is None:
                         raise ValueError("No dose found in plan.")
-                    if deriveNames:
-                        scanNum = cerrScan.getScanNumFromUID(planC.dose[doseNum].assocScanUID, planC)
-                        existingNames = [record.structures[name] for name in requiredStructs
-                                         if recipes[name].get("source") == "existing"]
-                        planC = _deriveStructures(planC, scanNum, deriveNames, existingNames, record,
-                                                  analysisDir, taskLog)
                     patientModel = applyStructureNameMap(modelFile, _patientNameMap(record))
                     _setPatientPredictors(patientModel, record.predictors)
                     _checkStructuresPresent(planC, getRequiredStructures(patientModel))
@@ -215,6 +198,10 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
         rows.append({"patient_id": patientId, "ntcp": ntcp,
                      "status": status, "message": message})
         ntcpResult = {"status": status, "value": ntcp} if status == "ok" else {"status": status, "message": message}
+        if deriveNames and not fromPredictors:
+            derivedResult = {"status": "ok"} if derived else {"status": "error", "message": message}
+            logs.recordResult(analysisDir, taskLog, runIndex, patientId, "segment",
+                              {**derivedResult, "files": derivedFiles}, key=logs.DERIVED_KEY)
         logs.recordResult(analysisDir, taskLog, runIndex, patientId, "ntcp", ntcpResult,
                           warningMessages=patientWarnings)
 
@@ -224,9 +211,131 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
     logs.finishRun(analysisDir, taskLog, runIndex)
     return pd.DataFrame(rows, columns=RESULT_COLUMNS)
 
+
+def deriveStructuresForCohort(analysisDir, errorLog, progressCallback=None, shouldStop=None):
+    """Derive the structures set to "derive" in the settings for every patient,
+    without computing NTCP (see deriveModelStructures).
+
+    Each patient's exports and status are recorded in task_log.yaml under the
+    patient's "segment" section (logs.DERIVED_KEY).
+
+    Args:
+        analysisDir (str): the analysis folder holding the settings file (analysis.FILE_NAME).
+        errorLog (validate.logs.ErrorLog): error log to write to.
+        progressCallback (callable): optional f(done, total, patientId) hook,
+            invoked after each patient is processed.
+        shouldStop (callable): optional f() -> bool, checked before each patient;
+            True stops the run there.
+
+    Returns:
+        pandas.DataFrame: One row per patient: patient_id, status ("ok" or "error"), message.
+
+    Raises:
+        ValueError: the settings start from pre-computed predictors, or no structure is set to "derive".
+    """
+    settingsPath = os.path.join(analysisDir, analysis.FILE_NAME)
+    try:
+        inputs = _modelInputs(settingsPath)
+        if inputs.fromPredictors:
+            raise ValueError("Structures can't be derived when starting from pre-computed predictors.")
+        if not inputs.deriveNames:
+            raise ValueError("No structures are set to Derive.")
+        taskLog, runIndex = logs.startRun(analysisDir, settingsPath, "model", errorLogPath=errorLog.path,
+                                          details=logs.modelFileProvenance(inputs.modelFile))
+    except Exception as exc:
+        errorLog.error("(setup)", str(exc))
+        raise
+
+    total = len(inputs.patients)
+    rows = []
+    for i, (patientId, dataDir) in enumerate(inputs.patients):
+        if shouldStop and shouldStop():
+            break
+        derivedFiles = {}
+        result = {"status": "ok"}
+        with logs.collectWarnings() as patientWarnings:
+            try:
+                patientInfo = _row(inputs.patientInfoDf, patientId)
+                record = buildPatientRecord(patientId, dataDir, inputs.recipes, planRow=patientInfo,
+                                            predictorsRow=_row(inputs.predictorsDf, patientId))
+                deriveModelStructures(record, patientInfo, inputs.recipes, inputs.deriveNames,
+                                      analysisDir, taskLog, derivedFiles)
+            except Exception as exc:
+                result = {"status": "error", "message": str(exc)}
+                errorLog.error(patientId, f"Derive: {exc}")
+
+        rows.append({"patient_id": patientId, "status": result["status"], "message": result.get("message", "")})
+        logs.recordResult(analysisDir, taskLog, runIndex, patientId, "segment",
+                          {**result, "files": derivedFiles}, key=logs.DERIVED_KEY,
+                          warningMessages=patientWarnings)
+        if progressCallback:
+            progressCallback(i + 1, total, patientId)
+
+    logs.finishRun(analysisDir, taskLog, runIndex)
+    return pd.DataFrame(rows, columns=DERIVE_COLUMNS)
+
+
+def deriveModelStructures(record, patientInfo, recipes, deriveNames, analysisDir, taskLog, derivedFiles=None):
+    """Load one patient's data and derive the model's "derive" structures.
+
+    Validate's own outputs are dropped from the loaded data first. Structures are
+    derived on the scan the dose is linked to (the first scan if there's no dose),
+    and each is exported to <analysisDir>/<patientId>/ (see _deriveStructures).
+
+    Args:
+        record: the patient's record (data_io.build_capsule.buildPatientRecord).
+        patientInfo (pandas.Series or None): the patient's plan CSV row.
+        recipes (dict): {structName: settings entry} for the model's structures.
+        deriveNames (list[str]): structures to derive, in order (see _deriveOrder).
+        analysisDir (str): the analysis folder.
+        taskLog (dict): the task log (for the AI outputs Segment recorded).
+        derivedFiles (dict, optional): filled with {structName: exported file, relative to analysisDir}.
+
+    Returns:
+        tuple: (planC, doseNum), doseNum None if the patient has no dose.
+    """
+    patientId = record.pt_id
+    planC = loadPatientPlanC(record)
+    planC = _dropValidateOutputs(planC, analysisDir, taskLog, patientId)
+    # Forget the last run's derived exports; this run records its own
+    ((taskLog["patients"].get(patientId) or {}).get("segment") or {}).pop(logs.DERIVED_KEY, None)
+    doseNum = getDoseIndex(planC, patientId=patientId, patientInfo=patientInfo)
+    if deriveNames:
+        scanNum = (cerrScan.getScanNumFromUID(planC.dose[doseNum].assocScanUID, planC)
+                   if doseNum is not None else 0)
+        existingNames = [record.structures[name] for name, recipe in recipes.items()
+                         if recipe.get("source") == "existing"]
+        planC = _deriveStructures(planC, scanNum, deriveNames, existingNames, record,
+                                  analysisDir, taskLog, derivedFiles)
+    return planC, doseNum
+
 #===================================
 # Helper functions
 #====================================
+def _modelInputs(settingsPath):
+    """Read the Model tab's inputs from the settings: the patients, model file,
+    CSV tables and each required structure's recipe."""
+    dataCapsule = analysis.toDataCapsule(settingsPath)
+    # Patient-specific clinical factors (selected predictors)
+    predictorsDf = loadPatientInfo(dataCapsule.predictors_csv) if dataCapsule.predictors_csv else None
+    # Only pre-computed predictors (incl. DVH metrics)?
+    fromPredictors = dataCapsule.start_from == "predictors"
+    if fromPredictors:
+        patients = [(ptId, None) for ptId in sorted(predictorsDf.index)]
+    else:
+        patients = discoverPatients(dataCapsule.cohort_dir)
+    modelFile = dataCapsule.model["file"]
+    planStructuresCsv = dataCapsule.plan_structures_csv
+    requiredStructs = getRequiredStructures(modelFile)
+    # Analysis-level recipes for the model's structures ("existing" ones may give a dataset name)
+    recipes = {name: dataCapsule.structures.get(name) or {} for name in requiredStructs}
+    return SimpleNamespace(
+        predictorsDf=predictorsDf, fromPredictors=fromPredictors, patients=patients, modelFile=modelFile,
+        patientInfoDf=loadPatientInfo(planStructuresCsv) if planStructuresCsv else None,
+        recipes=recipes,
+        deriveNames=_deriveOrder(name for name in requiredStructs if recipes[name].get("source") == "derive"))
+
+
 def _useAIModel(aiModel, installDir):
     """(modelNum, modelName) for an AI model in the settings, after checking it is
     installed in installDir and making that its recorded install."""
@@ -268,14 +377,16 @@ def _deriveOrder(structNames):
     return sorted(structNames, key=lambda name: structures.getDerivation(name).type != "classic")
 
 
-def _deriveStructures(planC, scanNum, deriveNames, existingNames, record, analysisDir, taskLog):
+def _deriveStructures(planC, scanNum, deriveNames, existingNames, record, analysisDir, taskLog,
+                      derivedFiles=None):
     """Derive deriveNames (in order) for one patient, and export each to
     <analysisDir>/<patientId>/ for review.
 
     The outputs of every AI model Segment ran for the patient are added first.
     AI outputs, then derived structures, are used instead of structures of the
     same name in the patient's data, except the "existing" structures the
-    settings name (existingNames).
+    settings name (existingNames). Each export is added to derivedFiles
+    ({structName: path relative to analysisDir}) as it's written.
     """
     patientId = record.pt_id
     segment = (taskLog["patients"].get(patientId) or {}).get("segment") or {}
@@ -287,7 +398,7 @@ def _deriveStructures(planC, scanNum, deriveNames, existingNames, record, analys
     outDir = Path(analysisDir) / patientId
     numBefore = len(planC.structure)
     for aiModel, result in segment.items():
-        if logs.isSegmented(analysisDir, taskLog, patientId, aiModel):
+        if aiModel != logs.DERIVED_KEY and logs.isSegmented(analysisDir, taskLog, patientId, aiModel):
             planC = _importAIOutputs(aiModel, taskLog, result, outDir, scanNum, planC)
     planC = _preferStructures(planC, range(numBefore, len(planC.structure)), existingNames)
 
@@ -295,7 +406,9 @@ def _deriveStructures(planC, scanNum, deriveNames, existingNames, record, analys
     for name in deriveNames:
         structNum, planC = structures.getDerivation(name).deriveFn(planC, scanNum)
         outDir.mkdir(parents=True, exist_ok=True)
-        _exportStructure(planC, structNum, record, outDir, name)
+        exportPath = _exportStructure(planC, structNum, record, outDir, name)
+        if derivedFiles is not None:
+            derivedFiles[name] = Path(exportPath).relative_to(analysisDir).as_posix()
         derivedNums.append(structNum)
     return _preferStructures(planC, derivedNums, existingNames)
 
@@ -340,8 +453,12 @@ def _dropValidateOutputs(planC, analysisDir, taskLog, patientId):
     task log, or derived-structure exports) when the patient's folder is also the
     analysis folder, so they aren't mistaken for the patient's data."""
     segment = (taskLog["patients"].get(patientId) or {}).get("segment") or {}
+    # files is a list for AI outputs, {structName: file} for derived exports
     outputs = {os.path.realpath(Path(analysisDir) / f)
-               for result in segment.values() for f in result.get("files") or []}
+               for key, result in segment.items() if key != logs.DERIVED_KEY
+               for f in result.get("files") or []}
+    derived = (segment.get(logs.DERIVED_KEY) or {}).get("files") or {}
+    outputs |= {os.path.realpath(Path(analysisDir) / f) for f in derived.values()}
 
     def isOutput(struct):
         fileName = struct.structureFileName
@@ -367,13 +484,20 @@ def _patientNameMap(record):
 def _exportStructure(planC, structNum, record, outDir, structName):
     """Export a derived structure with pyCERR, in the patient's input format:
     RTSTRUCT for DICOM, a NIfTI mask for NIfTI/NRRD (an RTSTRUCT can't be linked
-    to a scan loaded from NIfTI). Written as <patientId>_<structName>_autoseg.*"""
+    to a scan loaded from NIfTI). Written as <patientId>_<structName>_autoseg.*
+
+    Returns:
+        str: path to the exported file.
+    """
     stem = outDir / f"{record.pt_id}_{structName}{AUTOSEG_SUFFIX}"
     if record.file_info.scan_file is None:
-        rtstruct_iod.create([structNum], str(stem) + ".dcm", planC,
+        path = str(stem) + ".dcm"
+        rtstruct_iod.create([structNum], path, planC,
                             {"seriesDescription": "AI Generated (validate)"})
     else:
-        planC.structure[structNum].saveNii(str(stem) + ".nii.gz", planC)
+        path = str(stem) + ".nii.gz"
+        planC.structure[structNum].saveNii(path, planC)
+    return path
 
 
 def _checkStructuresPresent(planC, structNames):

@@ -35,6 +35,9 @@ SUMMARY_NAME = "segment_summary.csv"
 TABS = ("segment", "model")
 # The section of each patient's entry holding a tab's results
 TAB_SECTIONS = {"segment": "segment", "model": "ntcp"}
+# Key under a patient's "segment" section listing the structures the Model tab
+# derived and exported: {"status", "files": {structName: file}, "message" (on error), "run"}
+DERIVED_KEY = "derived"
 SUMMARY_COLUMNS = ["patient_id", "ai_model", "status", "run", "file", "label", "structure", "message"]
 
 
@@ -170,6 +173,11 @@ def clearResults(analysisDir, tab):
     for patientId in list(taskLog["patients"]):
         entry = taskLog["patients"][patientId]
         entry.pop(section, None)
+        if tab == "model":
+            # Derived exports are listed under segment but made by the Model tab
+            (entry.get("segment") or {}).pop(DERIVED_KEY, None)
+            if entry.get("segment") == {}:
+                del entry["segment"]
         if not entry:
             del taskLog["patients"][patientId]
     taskLog["settings_hash"][tab] = None
@@ -222,6 +230,15 @@ def generateSummary(analysisDir):
     rows = []
     for patientId, patient in taskLog["patients"].items():
         for aiModel, result in (patient.get("segment") or {}).items():
+            if aiModel == DERIVED_KEY:
+                base = {"patient_id": patientId, "ai_model": DERIVED_KEY, "status": result.get("status"),
+                        "run": result.get("run"), "message": result.get("message")}
+                files = result.get("files") or {}
+                if not files:
+                    rows.append(base)
+                for structName, file in files.items():
+                    rows.append({**base, "file": file, "structure": structName})
+                continue
             base = {"patient_id": patientId, "ai_model": aiModel, "status": result.get("status"),
                     "run": result.get("run"), "message": result.get("message")}
             files = result.get("files") or []
