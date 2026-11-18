@@ -33,7 +33,7 @@ def checkModelsForStructures(structNames):
     return models, missingRecipe
 
 
-def installMissingModels(modelNums, installBaseDir, progressCallback=None, force=False):
+def installMissingModels(modelNums, installBaseDir, progressCallback=None, force=False, **installOptions):
     """Install each of modelNums via cerr.ai_models.install_utils, recording
     success in model_registry.
 
@@ -45,12 +45,25 @@ def installMissingModels(modelNums, installBaseDir, progressCallback=None, force
         force (bool): if True, re-install and replace the registry entry
             even for a modelNum already marked installed (e.g. its files
             were modified locally and need a fresh install). Default False
-            skips anything already installed, as before.
+            skips anything already installed, as before. Also replaces
+            the installed weights (install_utils forceWeights).
+        **installOptions: optional keyword arguments passed on to
+            install_utils.main, e.g. weightsUrl, weightsFile, credentials,
+            forceWeights, rebuildEnv, update. weightsUrl and weightsFile
+            need a single model in modelNums.
 
     Returns:
         list of (modelNum, success, message) -- message is the error text
         on failure, "" on success.
+
+    Raises:
+        ValueError: weightsUrl or weightsFile given with more than one model.
     """
+    modelNums = list(modelNums)
+    if len(modelNums) > 1 and (installOptions.get("weightsUrl") or installOptions.get("weightsFile")):
+        raise ValueError("weightsUrl and weightsFile apply to one model; pass a single model number.")
+    if force:
+        installOptions["forceWeights"] = True
     results = []
     for modelNum in modelNums:
         isInstalled, __ = model_registry.getInstallInfo(modelNum)
@@ -62,7 +75,7 @@ def installMissingModels(modelNums, installBaseDir, progressCallback=None, force
                 progressCallback(f"Installing model {modelNum}...")
             _, modelEntry = model_list.resolveModel(modelNum)
             modelName = modelEntry["name"]
-            install_utils.main(modelNum, installBaseDir)
+            install_utils.main(modelNum, installBaseDir, **installOptions)
             model_registry.recordInstall(modelNum, modelName, installBaseDir)
             results.append((modelNum, True, ""))
         except Exception as exc:

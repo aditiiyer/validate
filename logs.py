@@ -10,6 +10,10 @@
          pt001:
            segment: {<AI model>: {status, run, files, labels, warnings}}
            ntcp:    {status, value | message, run, warnings}
+
+   Results recorded to the task log are tied to the chosen settings. Modifying
+   the settings clears associated results from the task log (after you confirm),
+   so the two always match. Output files are kept until the tab is re-run.
 """
 
 import csv

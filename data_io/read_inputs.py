@@ -73,14 +73,15 @@ def discoverPatients(cohortDir):
         list of (patientId, dicomDir) tuples, sorted by patientId. validate's
         own outputs (VALIDATE_OUTPUT_NAMES: the log folder, settings file and
         task log) are skipped, since the cohort folder may also be the
-        analysis folder.
+        analysis folder, and so are analysis folders inside the cohort folder
+        (subfolders holding a settings file).
     """
     entries = []
     for name in sorted(os.listdir(cohortDir)):
         if name in VALIDATE_OUTPUT_NAMES:
             continue
         path = os.path.join(cohortDir, name)
-        if os.path.isdir(path):
+        if os.path.isdir(path) and not os.path.exists(os.path.join(path, SETTINGS_FILE_NAME)):
             entries.append((name, path))
     return entries
 

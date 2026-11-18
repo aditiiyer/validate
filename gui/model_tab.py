@@ -111,8 +111,7 @@ class ModelTab(ManageRun):
     def setModel(self, modelFile, structureSettings=None):
         """One row per structure the model needs: "Use existing: [name]" or "Derive"
         (only where a recipe is registered). structureSettings: the settings'
-        structures section; without an entry, Derive is chosen if its AI model
-        has run for any patient (or it needs none)."""
+        structures section; without an entry, Derive is chosen."""
         try:
             requiredStructs = getRequiredStructures(modelFile) if modelFile else []
         except Exception:
@@ -146,8 +145,7 @@ class ModelTab(ManageRun):
                 if entry.get("name"):
                     nameEdit.setText(entry["name"])
             else:
-                derive = derivation is not None and (derivation.aiModelName is None
-                                                     or self._hasRun(derivation.aiModelName))
+                derive = derivation is not None
             (deriveRadio if derive else existingRadio).setChecked(True)
             nameEdit.setEnabled(not derive)
 
@@ -176,12 +174,6 @@ class ModelTab(ManageRun):
                 structureSettings[entry["structName"]] = {"source": "existing", "name": name}
         return {"input": {key: edit.text().strip() or None for key, edit in self.csvEdits.items()},
                 "structures": structureSettings}
-
-    def _hasRun(self, aiModel):
-        analysisDir = self.host.analysisDir()
-        taskLog = self.host.taskLog()
-        return any(logs.isSegmented(analysisDir, taskLog, patientId, aiModel)
-                   for patientId in self.host.patients())
 
     def _browseCsv(self, edit):
         path, _ = QFileDialog.getOpenFileName(self, "Select CSV", "", "CSV files (*.csv)")

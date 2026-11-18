@@ -32,8 +32,7 @@ ACCENT = "#4fb8ac"         # ROE-teal-derived accent
 ACCENT_HOVER = "#63ccc0"
 ACCENT_PRESSED = "#3c9187"
 ACCENT_TEXT = "#0d1a19"
-TAB_TEXT = "#b39ddb"         # tab labels (violet)
-TAB_TEXT_SELECTED = "#cdb8ff"
+TAB_SELECTED = "#ffffff"   # tabs invert the theme: teal, dark text, selected white
 
 STYLESHEET = f"""
 QMainWindow, QDialog {{ background: {BG}; }}
@@ -157,8 +156,9 @@ QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
 
 QTabWidget::pane {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 4px; }}
 QTabBar::tab {{
-    background: {SURFACE};
-    color: {TAB_TEXT};
+    background: {ACCENT};
+    color: {ACCENT_TEXT};
+    font-weight: 600;
     padding: 10px 28px;
     margin-right: 4px;
     min-width: 110px;
@@ -167,8 +167,8 @@ QTabBar::tab {{
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }}
-QTabBar::tab:selected {{ background: {BG}; color: {TAB_TEXT_SELECTED}; border-bottom: 3px solid {TAB_TEXT_SELECTED}; }}
-QTabBar::tab:hover {{ color: {TAB_TEXT_SELECTED}; }}
+QTabBar::tab:selected {{ background: {TAB_SELECTED}; color: {ACCENT_TEXT}; }}
+QTabBar::tab:hover:!selected {{ background: {ACCENT_HOVER}; }}
 
 QScrollBar:vertical {{ background: {SURFACE}; width: 12px; }}
 QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 5px; min-height: 24px; }}
