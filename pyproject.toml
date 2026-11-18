@@ -1,11 +1,13 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "validate"
 version = "0.1.0"
 description = "Apply NTCP models to a patient cohort and review their calibration and performance."
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
   { name = "Aditi Iyer", email = "iyera@mskcc.org" },
 ]
