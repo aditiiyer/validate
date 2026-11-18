@@ -39,10 +39,14 @@ source .venv/bin/activate    # Windows: .venv\Scripts\activate
 ### 2. Install pyCERR and Validate
 
 ```bash
-uv pip install -e "pycerr @ git+https://github.com/cerr/pyCERR.git"
+git clone https://github.com/cerr/pyCERR.git
+uv pip install -e ./pyCERR
 git clone https://github.com/aditiiyer/validate.git
 uv pip install -e ./validate
 ```
+
+Both are editable installs from git checkouts, so the task log can record the exact
+validate and pyCERR commits used for each run.
 
 ### 3. Verify
 

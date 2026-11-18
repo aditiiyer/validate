@@ -34,7 +34,6 @@ packages = [
     "validate",
     "validate.core",
     "validate.data_io",
-    "validate.evaluation",
     "validate.gui",
     "validate.modeling",
     "validate.seg",
