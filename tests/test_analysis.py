@@ -230,7 +230,7 @@ def test_segmentTabSettings():
     settings = copy.deepcopy(RAW_SETTINGS)
     settings["segment"] = {"ai_models": ["CT_HeadAndNeck_OARs"], "install_dir": "/models"}
     assert analysis.tabSettings(settings, "segment") == {
-        "input": {"start_from": "dicom", "data_dir": "/data/cohort"},
+        "input": {"start_from": "dicom", "data_dir": "/data/cohort", "plan_structures_csv": None},
         "compute": {"device": "cpu"},
         "segment": {"ai_models": ["CT_HeadAndNeck_OARs"], "install_dir": "/models"},
     }
@@ -248,7 +248,8 @@ def test_modelTabSettings():
 @pytest.mark.parametrize("key, value, changedTabs", [
     ("model.name", "Dysphagia", set()),     # a new model is a new analysis, in its own folder
     ("structures", {"SCRR": {"source": "derive"}}, {"model"}),
-    ("input.plan_structures_csv", "/data/plan.csv", {"model"}),
+    ("input.plan_structures_csv", "/data/plan.csv", {"segment", "model"}),
+    ("input.predictors_csv", "/data/predictors.csv", {"model"}),
     ("compute.device", "gpu", {"segment"}),
     ("segment.ai_models", ["CT_HeadAndNeck_OARs"], {"segment"}),
     ("input.data_dir", "/data/other", {"segment", "model"}),

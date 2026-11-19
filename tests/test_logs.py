@@ -63,7 +63,7 @@ def test_sameSettingsResume(analysisDir):
 
 
 @pytest.mark.parametrize("key, value, refusedTab, allowedTab", [
-    ("input.plan_structures_csv", "/data/plan.csv", "model", "segment"),
+    ("input.predictors_csv", "/data/predictors.csv", "model", "segment"),
     ("compute.device", "gpu", "segment", "model"),
 ])
 def test_onlyChangedTabRefused(analysisDir, key, value, refusedTab, allowedTab):

@@ -2,11 +2,42 @@
 models never blocks the GUI thread.
 """
 
+import threading
+import time
+
+import psutil
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from validate.run import applyModelToCohort, applyAutoSegToCohort, deriveStructuresForCohort
-from validate.seg.autoseg_pipeline import installMissingModels
+from validate.seg.autoseg_pipeline import installMissingModels, removePartialDownloads
 from validate.logs import ErrorLog
+
+
+def killChildProcesses(timeout=3):
+    """Terminate this process's child processes and their children (AI model
+    inference, git, uv, weights downloads), killing any still running after timeout s."""
+    children = psutil.Process().children(recursive=True)
+    for proc in children:
+        try:
+            proc.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    _, alive = psutil.wait_procs(children, timeout=timeout)
+    for proc in alive:
+        try:
+            proc.kill()
+        except psutil.NoSuchProcess:
+            pass
+
+
+def _abortThread(thread):
+    """Kill the thread's child processes until it finishes, in the background:
+    pyCERR may start another process (e.g. the next install step) after one is killed."""
+    def keepKilling():
+        while thread.isRunning():
+            killChildProcesses()
+            time.sleep(0.2)
+    threading.Thread(target=keepKilling, daemon=True).start()
 
 
 class InstallWorker(QThread):
@@ -17,30 +48,45 @@ class InstallWorker(QThread):
     finishedOk = pyqtSignal(list)   # [(modelNum, success, message), ...]
     failed = pyqtSignal(str)
 
-    def __init__(self, modelNums, installBaseDir, force=False, parent=None):
+    def __init__(self, modelNums, installBaseDir, force=False, installOptions=None, parent=None):
         """Set up the install of AI models.
 
         Args:
             modelNums (list[int]): AI model numbers to install.
             installBaseDir (str): Folder to install the models into.
             force (bool): If True, reinstall models that are already installed.
+            installOptions (dict, optional): Passed on to pyCERR's install_utils
+                (e.g. weightsUrl, for a single model).
             parent (QObject, optional): Qt parent.
         """
         super().__init__(parent)
         self.modelNums = modelNums
         self.installBaseDir = installBaseDir
         self.force = force
+        self.installOptions = installOptions or {}
+        self.aborted = False
+
+    def abort(self):
+        """Stop the install now: kill its processes. Unfinished weights downloads
+        are deleted once it stops (see run)."""
+        self.aborted = True
+        _abortThread(self)
 
     def run(self):
         """Install the models, then emit finishedOk with each model's result,
-        or failed with the error message."""
+        or failed with the error message. After an abort, unfinished weights
+        downloads are deleted first."""
         try:
             results = installMissingModels(
                 self.modelNums, self.installBaseDir,
                 progressCallback=lambda msg: self.stage.emit(msg),
-                force=self.force)
+                force=self.force, shouldStop=lambda: self.aborted, **self.installOptions)
+            if self.aborted:
+                removePartialDownloads(self.modelNums, self.installBaseDir)
             self.finishedOk.emit(results)
         except Exception as exc:
+            if self.aborted:
+                removePartialDownloads(self.modelNums, self.installBaseDir)
             self.failed.emit(str(exc))
 
 
@@ -62,10 +108,18 @@ class RunWorker(QThread):
         super().__init__(parent)
         self.analysisDir = analysisDir
         self._stopRequested = False
+        self.aborted = False
 
     def requestStop(self):
         """Ask the run to stop before the next patient."""
         self._stopRequested = True
+
+    def abort(self):
+        """Stop the run now: kill its processes (AI model inference). The patient
+        being run is recorded as aborted, and the run stops there."""
+        self._stopRequested = True
+        self.aborted = True
+        _abortThread(self)
 
     def run(self):
         """Run over the cohort with a new error log, then emit finishedOk with the
@@ -120,7 +174,7 @@ class SegmentWorker(RunWorker):
             progressCallback=lambda done, total, pid: self.progress.emit(done, total, pid),
             stageCallback=lambda msg: self.stage.emit(msg),
             overwrite=self.overwrite,
-            shouldStop=lambda: self._stopRequested)
+            shouldStop=lambda: self._stopRequested, isAborted=lambda: self.aborted)
 
 
 class ModelWorker(RunWorker):
@@ -138,7 +192,7 @@ class ModelWorker(RunWorker):
         return applyModelToCohort(
             self.analysisDir, errorLog,
             progressCallback=lambda done, total, pid: self.progress.emit(done, total, pid),
-            shouldStop=lambda: self._stopRequested)
+            shouldStop=lambda: self._stopRequested, isAborted=lambda: self.aborted)
 
 
 class DeriveWorker(RunWorker):
@@ -156,4 +210,4 @@ class DeriveWorker(RunWorker):
         return deriveStructuresForCohort(
             self.analysisDir, errorLog,
             progressCallback=lambda done, total, pid: self.progress.emit(done, total, pid),
-            shouldStop=lambda: self._stopRequested)
+            shouldStop=lambda: self._stopRequested, isAborted=lambda: self.aborted)

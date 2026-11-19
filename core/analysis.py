@@ -49,7 +49,7 @@ STRUCTURE_SOURCES = ("existing", "derive")
 # The settings each tab's results depend on.
 # A change to a tab's settings clears that tab's results (see tabSettings).
 TAB_SETTINGS = {
-    "segment": {"input": ("start_from", "data_dir"), "compute": ("device",),
+    "segment": {"input": ("start_from", "data_dir", "plan_structures_csv"), "compute": ("device",),
                 "segment": ("ai_models", "install_dir")},
     "model": {"input": None, "structures": None},
 }

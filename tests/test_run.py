@@ -144,6 +144,24 @@ def test_failedPatientDoesNotStopOthers(segment):
     assert result == {"status": "error", "message": "GPU out of memory", "run": 0}
 
 
+def test_abortedPatientRecordedAndRunStops(segment, monkeypatch):
+    aborted = []
+
+    def killedAIModel(*args, **kwargs):
+        aborted.append(True)        # the abort kills the AI model's process
+        raise RuntimeError("Model inference failed. STDERR: (killed)")
+
+    monkeypatch.setattr(run, "runAIModel", killedAIModel)
+    results, errors = _segment(segment, shouldStop=lambda: bool(aborted), isAborted=lambda: bool(aborted))
+
+    assert results == {"pt1": {AI_MODEL: f"error: {run.ABORTED_MESSAGE}"}}
+    assert errors == [f"[ERROR] pt1: {AI_MODEL}: {run.ABORTED_MESSAGE}"]
+    taskLog = _readTaskLog(segment.dir)
+    assert taskLog["patients"] == {"pt1": {"segment": {AI_MODEL: {
+        "status": "error", "message": run.ABORTED_MESSAGE, "run": 0}}}}
+    assert taskLog["runs"][0]["finished"] is not None
+
+
 def test_noOutputFilesIsAnError(segment, monkeypatch):
     monkeypatch.setattr(run, "runAIModel", lambda *args, **kwargs: None)
     results, errors = _segment(segment)

@@ -5,7 +5,7 @@ then compute NTCP for every patient, and export the per-patient predictions to C
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog,
-    QTableWidget, QTableWidgetItem, QMessageBox, QRadioButton, QButtonGroup, QGroupBox,
+    QTableWidget, QTableWidgetItem, QMessageBox, QRadioButton, QButtonGroup,
     QHeaderView, QAbstractItemView, QToolButton
 )
 
@@ -18,16 +18,6 @@ from validate import logs
 
 # (settings key, label, help, details shown by the "i" button)
 CSV_FIELDS = [
-    ("plan_structures_csv", "Plan info:",
-     "Optional. Plan names, fractionation, existing structures (per case).",
-     "One row per patient. Only ID is required.\n\n"
-     "ID: patient folder name.\n"
-     "Plan name: RTDOSE file name, if a patient has more than one dose (DICOM).\n"
-     "Prescribed dose (Gy), Fraction size (Gy), Fraction number: any two, if the model "
-     "needs fractionation correction.\n"
-     "Scan file, Dose file: file name or pattern (NIfTI/NRRD).\n"
-     "<structure>: one column per structure the model needs, giving its name in the "
-     "RTSTRUCT (DICOM), or its mask file or \"file:label\" (NIfTI/NRRD)."),
     ("predictors_csv", "Predictor values:",
      "Optional input. Pass patient-specific clinical factors (age, gender etc.) or pre-computed predictors.",
      "One row per patient. Only ID is required.\n\n"
@@ -53,16 +43,14 @@ class ModelTab(ManageRun):
 
     def _buildUi(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(2, 12, 2, 16)
+        layout.setSpacing(theme.SECTION_SPACING)
 
-        inputsGroup = QGroupBox("Inputs")
-        inputsLayout = QVBoxLayout(inputsGroup)
-        inputsLayout.setSpacing(10)
+        inputsGroup, inputsLayout = theme.section("Inputs")
 
-        structHeading = QLabel("Structures")
-        structHeading.setFont(theme.headingFont(structHeading))
-        inputsLayout.addWidget(structHeading)
+        self.structHeading = QLabel("Structures")
+        self.structHeading.setFont(theme.headingFont(self.structHeading))
+        inputsLayout.addWidget(self.structHeading)
         self.structTable = QTableWidget(0, 2)
         self.structTable.setHorizontalHeaderLabels(["Expected", "Source"])
         structHeader = self.structTable.horizontalHeader()
@@ -89,6 +77,8 @@ class ModelTab(ManageRun):
             edit.setToolTip(helpText)
             selectBtn = QPushButton("Select CSV")
             selectBtn.clicked.connect(lambda _, e=edit: self._browseCsv(e))
+            if key == "predictors_csv":
+                edit.editingFinished.connect(self.host.onPredictorsCsvChanged)
             infoBtn = QToolButton()
             infoBtn.setText("i")
             infoBtn.setToolTip(details)
@@ -158,13 +148,22 @@ class ModelTab(ManageRun):
             self._structRows.append({"structName": structName, "group": group,
                                      "deriveRadio": deriveRadio, "nameEdit": nameEdit})
 
+    def setFromPredictors(self, fromPredictors):
+        """Gray out the structures when starting from pre-computed predictors
+        (the dose metrics come from the predictors CSV)."""
+        self.structHeading.setEnabled(not fromPredictors)
+        self.structTable.setEnabled(not fromPredictors)
+
+    def predictorsCsv(self):
+        return self.csvEdits["predictors_csv"].text().strip() or None
+
     def loadSettings(self, settings):
         inputs = settings.get("input") or {}
         for key, edit in self.csvEdits.items():
             edit.setText(inputs.get(key) or "")
 
     def settingsPart(self):
-        """This tab's part of analysis.yaml: the CSV inputs and structures."""
+        """This tab's part of analysis.yaml: the predictor values CSV and structures."""
         structureSettings = {}
         for entry in self._structRows:
             if entry["deriveRadio"].isChecked():
@@ -179,6 +178,8 @@ class ModelTab(ManageRun):
         path, _ = QFileDialog.getOpenFileName(self, "Select CSV", "", "CSV files (*.csv)")
         if path:
             edit.setText(path)
+            if edit is self.csvEdits["predictors_csv"]:
+                self.host.onPredictorsCsvChanged()
 
     # Run
 

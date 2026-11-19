@@ -5,6 +5,7 @@
 import shutil
 from pathlib import Path
 
+import SimpleITK as sitk
 from cerr.ai_models import install_utils, run_utils, model_list
 
 from validate.seg import model_registry
@@ -33,7 +34,8 @@ def checkModelsForStructures(structNames):
     return models, missingRecipe
 
 
-def installMissingModels(modelNums, installBaseDir, progressCallback=None, force=False, **installOptions):
+def installMissingModels(modelNums, installBaseDir, progressCallback=None, force=False, shouldStop=None,
+                         **installOptions):
     """Install each of modelNums via cerr.ai_models.install_utils, recording
     success in model_registry.
 
@@ -47,6 +49,8 @@ def installMissingModels(modelNums, installBaseDir, progressCallback=None, force
             were modified locally and need a fresh install). Default False
             skips anything already installed, as before. Also replaces
             the installed weights (install_utils forceWeights).
+        shouldStop (callable): optional f() -> bool, checked before each model;
+            True stops there (e.g. the install was aborted).
         **installOptions: optional keyword arguments passed on to
             install_utils.main, e.g. weightsUrl, weightsFile, credentials,
             forceWeights, rebuildEnv, update. weightsUrl and weightsFile
@@ -66,6 +70,8 @@ def installMissingModels(modelNums, installBaseDir, progressCallback=None, force
         installOptions["forceWeights"] = True
     results = []
     for modelNum in modelNums:
+        if shouldStop and shouldStop():
+            break
         isInstalled, __ = model_registry.getInstallInfo(modelNum)
         if not force and isInstalled:
             results.append((modelNum, True, ""))
@@ -83,6 +89,24 @@ def installMissingModels(modelNums, installBaseDir, progressCallback=None, force
     return results
 
 
+def removePartialDownloads(modelNums, installBaseDir):
+    """Delete weights downloads left unfinished (an aborted install) in the models'
+    repositories: get_weights.py downloads into <repo>/weights/.get_weights_*
+    and moves the weights into place only once they're complete.
+
+    Returns:
+        list[str]: the folders deleted.
+    """
+    removed = []
+    for modelNum in modelNums:
+        _, repo, _ = install_utils.getModel(modelNum)
+        weightsDir = install_utils.getRepoPath(repo, installBaseDir) / "weights"
+        for partial in sorted(weightsDir.glob(".get_weights_*")) if weightsDir.is_dir() else []:
+            shutil.rmtree(partial, ignore_errors=True)
+            removed.append(str(partial))
+    return removed
+
+
 def runAIModel(modelNum, record, sessionDir,
                progressCallback=None, outputDir=None):
     """Run one AI model on one patient (DICOM, NIfTI or NRRD).
@@ -91,7 +115,8 @@ def runAIModel(modelNum, record, sessionDir,
         modelNum (int): AI model number.
         record (validate.core.data_capsule.PatientRecord): Patient info datastruct.
                 For DICOM, scans are in record.file_info.data_dir.
-                For NIfTI/NRRD, teh scan is at record.file_info.scan_file.
+                For NIfTI/NRRD, the scan is at record.file_info.scan_file;
+                an NRRD scan is converted to NIfTI for the model.
         sessionDir (str): working folder for this run.
         progressCallback (callable): optional f(message) status hook.
         outputDir (str or None): folder the model writes its outputs to.
@@ -109,7 +134,12 @@ def runAIModel(modelNum, record, sessionDir,
     else:
         stagedDir = Path(sessionDir) / "scan_cpy"
         stagedDir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(Path(dataDir) / scanFile, stagedDir / Path(scanFile).name)
+        scanPath = Path(dataDir) / scanFile
+        if scanPath.suffix.lower() == ".nrrd":
+            # AI models read NIfTI or DICOM, so NRRD scans are staged as NIfTI
+            sitk.WriteImage(sitk.ReadImage(str(scanPath)), str(stagedDir / (scanPath.stem + ".nii.gz")))
+        else:
+            shutil.copy2(scanPath, stagedDir / scanPath.name)
         inputDir = str(stagedDir)
 
     userInputs = {"input_path": inputDir, "output_path": str(outputDir) if outputDir else dataDir,

@@ -6,20 +6,25 @@ Design principles applied:
       for de-emphasis (placeholders, disabled controls) without hiding it.
     - Consistency: one spacing unit (4px) and one corner radius (4px) reused
       throughout; identical treatment for all buttons/inputs/tables.
-    - Hierarchy: the one primary action (Run) is accent-colored and larger
-      than secondary buttons (Browse/Export); section headings are bold and
-      a step up in size from body text.
-    - Legibility: a larger-than-default base point size app-wide, since the
-      Qt/platform default (~9pt) reads small on modern displays.
+    - Hierarchy: primary actions (Run, Next) are filled teal; the other buttons
+      are gray. Sections are separated by space rather than boxes, with small,
+      muted, uppercase titles; the selected tab is raised and underlined in teal.
+    - Legibility: font sizes scale from the platform's default font (13pt on
+      macOS, ~9-10pt on Linux/Windows, where Qt maps points to pixels
+      differently), with a 10pt floor, since smaller defaults read small.
 """
 
-from PyQt5 import QtGui
+import os
+
+from PyQt5 import QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
-BASE_POINT_SIZE = 10
-HEADING_POINT_SIZE = 11
-GROUP_TITLE_POINT_SIZE = 14
-APP_TITLE_POINT_SIZE = 14
+MIN_BASE_POINT_SIZE = 10
+# Point sizes relative to the base (the platform's default font size)
+HEADING_OFFSET = 1
+GROUP_TITLE_OFFSET = -1
+TAB_OFFSET = 1
+_baseSize = MIN_BASE_POINT_SIZE   # set by apply()
 
 BG = "#1e2222"            # window background
 SURFACE = "#282e2e"        # panels / group boxes
@@ -30,30 +35,43 @@ TEXT = "#e8efef"
 TEXT_MUTED = "#9fb0b0"
 ACCENT = "#4fb8ac"         # ROE-teal-derived accent
 ACCENT_HOVER = "#63ccc0"
-ACCENT_PRESSED = "#3c9187"
 ACCENT_TEXT = "#0d1a19"
-TAB_SELECTED = "#ffffff"   # tabs invert the theme: teal, dark text, selected white
+PRIMARY = "#2a7f76"         # primary buttons: a darker teal, with a lighter edge
+PRIMARY_HOVER = "#31938a"
+PRIMARY_PRESSED = "#226a63"
+PRIMARY_BORDER = "#3fa197"
+PRIMARY_BORDER_TOP = "#5cbcb1"
+PRIMARY_TEXT = "#f2f7f7"
+TAB_HOVER = "#242a2a"
+DISABLED_TEXT = "#5c6868"
+DISABLED_BORDER = "#353d3d"
+SECTION_SPACING = 32        # px between sections
+ROW_SPACING = 10            # px between rows in a section
+CHECK_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check.svg").replace(os.sep, "/")
 
-STYLESHEET = f"""
+def styleSheet(groupTitleSize):
+    """The app stylesheet, with group titles at groupTitleSize (pt)."""
+    return f"""
 QMainWindow, QDialog {{ background: {BG}; }}
 QWidget {{ color: {TEXT}; }}
 
 QGroupBox {{
-    background: {SURFACE};
-    border: 1px solid {BORDER};
-    border-radius: 6px;
-    margin-top: 14px;
-    padding: 10px 8px 8px 8px;
+    background: transparent;
+    border: none;
+    margin-top: 18px;
+    padding: 8px 0 0 0;
     font-weight: 600;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 4px;
-    color: {ACCENT};
-    font-size: {GROUP_TITLE_POINT_SIZE}pt;
-    font-weight: 700;
+    left: 0;
+    padding: 0;
+    color: {TEXT_MUTED};
+    font-size: {groupTitleSize}pt;
+    font-weight: 600;
 }}
+
+QFrame#divider {{ background: {BORDER}; border: none; min-height: 1px; max-height: 1px; }}
 
 QLabel {{ background: transparent; }}
 QLabel:disabled {{ color: {TEXT_MUTED}; }}
@@ -78,22 +96,26 @@ QPushButton {{
     background: {FIELD};
     color: {TEXT};
     border: 1px solid {BORDER};
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 6px 16px;
 }}
 QPushButton:hover {{ background: {FIELD_ALT}; border-color: {ACCENT}; }}
 QPushButton:pressed {{ background: {ACCENT}; color: {ACCENT_TEXT}; border-color: {ACCENT}; }}
-QPushButton:disabled {{
-    background: {SURFACE};
-    color: {TEXT_MUTED};
-    border: 1px dashed {BORDER};
-}}
-
-/* "Primary" (theme.markPrimary) buttons are the same gray-idle/teal-pressed
-   states as any other button -- just bolder and roomier, as the CTA. */
+/* "Primary" (theme.markPrimary) buttons: filled teal, bolder and roomier, as the CTA. */
 QPushButton#primaryButton {{
+    background: {PRIMARY};
+    color: {PRIMARY_TEXT};
+    border: 1px solid {PRIMARY_BORDER};
+    border-top-color: {PRIMARY_BORDER_TOP};
     font-weight: 600;
     padding: 8px 22px;
+}}
+QPushButton#primaryButton:hover {{ background: {PRIMARY_HOVER}; }}
+QPushButton#primaryButton:pressed {{ background: {PRIMARY_PRESSED}; }}
+QPushButton:disabled, QPushButton#primaryButton:disabled {{
+    background: transparent;
+    color: {DISABLED_TEXT};
+    border: 1px solid {DISABLED_BORDER};
 }}
 
 QRadioButton, QCheckBox {{ background: transparent; spacing: 8px; }}
@@ -113,6 +135,11 @@ QRadioButton::indicator:checked {{
 }}
 QRadioButton::indicator:checked:hover {{ border-color: {ACCENT_HOVER}; }}
 QRadioButton::indicator:disabled {{ border-color: {BORDER}; background: {SURFACE}; }}
+QRadioButton::indicator:checked:disabled {{
+    border-color: {BORDER};
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
+        fx:0.5, fy:0.5, stop:0 {TEXT_MUTED}, stop:0.55 {TEXT_MUTED}, stop:0.65 {SURFACE}, stop:1 {SURFACE});
+}}
 
 QCheckBox::indicator {{
     width: 16px;
@@ -122,8 +149,14 @@ QCheckBox::indicator {{
     background: {FIELD};
 }}
 QCheckBox::indicator:hover {{ border-color: {ACCENT_HOVER}; }}
-QCheckBox::indicator:checked {{ border: 2px solid {ACCENT}; background: {ACCENT}; }}
+QCheckBox::indicator:checked {{ border: 2px solid {ACCENT}; background: {ACCENT}; image: url({CHECK_ICON}); }}
 QCheckBox::indicator:disabled {{ border-color: {BORDER}; background: {SURFACE}; }}
+QCheckBox::indicator:checked:disabled {{ border-color: {BORDER}; background: {BORDER}; image: url({CHECK_ICON}); }}
+
+/* Grayed-out (disabled) controls keep their state visible, in muted text */
+QRadioButton:disabled, QCheckBox:disabled, QTableWidget:disabled, QHeaderView::section:disabled {{
+    color: {TEXT_MUTED};
+}}
 
 QTableWidget {{
     background: {FIELD};
@@ -154,21 +187,19 @@ QProgressBar {{
 }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
 
-QTabWidget::pane {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 4px; }}
+QTabWidget::pane {{ background: {BG}; border: none; border-top: 1px solid {BORDER}; }}
 QTabBar::tab {{
-    background: {ACCENT};
-    color: {ACCENT_TEXT};
-    font-weight: 600;
-    padding: 10px 28px;
+    background: transparent;
+    color: {TEXT_MUTED};
+    padding: 10px 22px;
     margin-right: 4px;
-    min-width: 110px;
-    border: 1px solid {BORDER};
-    border-bottom: none;
+    border: none;
+    border-bottom: 3px solid transparent;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }}
-QTabBar::tab:selected {{ background: {TAB_SELECTED}; color: {ACCENT_TEXT}; }}
-QTabBar::tab:hover:!selected {{ background: {ACCENT_HOVER}; }}
+QTabBar::tab:selected {{ background: {SURFACE}; color: {TEXT}; border-bottom: 3px solid {ACCENT}; }}
+QTabBar::tab:hover:!selected {{ background: {TAB_HOVER}; color: {TEXT}; }}
 
 QScrollBar:vertical {{ background: {SURFACE}; width: 12px; }}
 QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 5px; min-height: 24px; }}
@@ -199,30 +230,59 @@ def palette():
 
 
 def apply(app):
-    """Apply the dark theme + base font size application-wide."""
+    """Apply the dark theme + base font size application-wide.
+
+    The base size is the platform's default font size, at least MIN_BASE_POINT_SIZE.
+    """
+    global _baseSize
+    font = QtGui.QFont(app.font())
+    # pointSize() is -1 if the default font is sized in pixels
+    _baseSize = max(font.pointSize(), MIN_BASE_POINT_SIZE)
+
     app.setStyle("Fusion")
     app.setPalette(palette())
-    app.setStyleSheet(STYLESHEET)
+    app.setStyleSheet(styleSheet(_baseSize + GROUP_TITLE_OFFSET))
 
-    font = QtGui.QFont(app.font())
-    font.setPointSize(BASE_POINT_SIZE)
+    font.setPointSize(_baseSize)
     app.setFont(font)
 
 
 def headingFont(widget):
     """Bold, slightly larger font for a section-heading QLabel."""
     font = QtGui.QFont(widget.font())
-    font.setPointSize(HEADING_POINT_SIZE)
+    font.setPointSize(_baseSize + HEADING_OFFSET)
     font.setBold(True)
     return font
 
 
-def appTitleFont(widget):
-    """Bold, large font for the app's own header label."""
+# Tab weights, set on the tab bar itself (see main_window)
+TAB_BAR_STYLE = "QTabBar::tab { font-weight: normal; } QTabBar::tab:selected { font-weight: 600; }"
+
+
+def tabFont(widget):
+    """The tab bar's font: a step up from body text, and semibold, the selected tab's
+    weight, so Qt sizes the tabs to fit it (TAB_BAR_STYLE sets the others' weight)."""
     font = QtGui.QFont(widget.font())
-    font.setPointSize(APP_TITLE_POINT_SIZE)
-    font.setBold(True)
+    font.setPointSize(_baseSize + TAB_OFFSET)
+    font.setWeight(QtGui.QFont.DemiBold)
     return font
+
+
+def section(title):
+    """A section: a QGroupBox with an uppercase title (Qt stylesheets can't
+    transform text), and its QVBoxLayout at the theme's row spacing."""
+    group = QtWidgets.QGroupBox(title.upper())
+    layout = QtWidgets.QVBoxLayout(group)
+    layout.setSpacing(ROW_SPACING)
+    layout.setContentsMargins(0, 4, 0, 0)
+    return group, layout
+
+
+def divider():
+    """A thin horizontal line between sections."""
+    line = QtWidgets.QFrame()
+    line.setObjectName("divider")
+    return line
 
 
 def markPrimary(button):

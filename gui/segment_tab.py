@@ -4,13 +4,14 @@
 
 from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QMessageBox,
-    QGroupBox, QCheckBox, QRadioButton, QButtonGroup, QWidget, QProgressBar
+    QCheckBox, QRadioButton, QButtonGroup, QWidget, QProgressBar
 )
 
 from cerr.ai_models import model_list
 
 from validate.gui.progress_and_logging import ManageRun, LABEL_WIDTH, buttonRow
 from validate.gui.worker import InstallWorker, SegmentWorker
+from validate.gui import theme
 from validate.seg import model_registry
 from validate.seg.structures import listReqdAISegModels
 from validate import logs
@@ -33,12 +34,10 @@ class SegmentTab(ManageRun):
 
     def _buildUi(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(2, 12, 2, 16)
+        layout.setSpacing(theme.SECTION_SPACING // 2)     # half above, half below each divider
 
-        self.modelsGroup = QGroupBox("AI models")
-        modelsLayout = QVBoxLayout(self.modelsGroup)
-        modelsLayout.setSpacing(10)
+        self.modelsGroup, modelsLayout = theme.section("AI models")
         self.modelsHeading = QLabel("")
         modelsLayout.addWidget(self.modelsHeading)
         self.modelRowsLayout = QVBoxLayout()
@@ -69,6 +68,22 @@ class SegmentTab(ManageRun):
             edit.editingFinished.connect(self._refreshStatus)
         self.useExistingRadio.toggled.connect(self._refreshStatus)
 
+        # Not saved to analysis.yaml: the link is private to the site
+        urlRow = QHBoxLayout()
+        urlLabel = QLabel("Weights URL:")
+        urlLabel.setMinimumWidth(LABEL_WIDTH)
+        self.weightsUrlEdit = QLineEdit()
+        self.weightsUrlEdit.setPlaceholderText("Optional. Enter model download link.")
+        self.weightsUrlEdit.setToolTip("Weights download link, as received from the model maintainers.\n"
+                                       "Leave empty to use the model's default source.")
+        urlRow.addWidget(urlLabel)
+        urlRow.addWidget(self.weightsUrlEdit)
+        modelsLayout.addLayout(urlRow)
+        self.installRadio.toggled.connect(urlLabel.setEnabled)
+        self.installRadio.toggled.connect(self.weightsUrlEdit.setEnabled)
+        urlLabel.setEnabled(False)
+        self.weightsUrlEdit.setEnabled(False)
+
         # Shown while installing; pyCERR's installer doesn't report how far along it is
         self.installProgress = QProgressBar()
         self.installProgress.setRange(0, 0)
@@ -91,30 +106,32 @@ class SegmentTab(ManageRun):
         deviceRow.addStretch()
         layout.addWidget(self.modelsGroup)
 
-        runGroup = QGroupBox("Run")
-        runLayout = QVBoxLayout(runGroup)
-        runLayout.setSpacing(10)
+        runGroup, runLayout = theme.section("Run")
         runLayout.addLayout(deviceRow)
         runLayout.addLayout(buttonRow(self._buildRunButtons()))
         self._addProgress(runLayout)
+        layout.addWidget(theme.divider())
         layout.addWidget(runGroup)
 
-        reviewGroup = QGroupBox("Review")
+        reviewGroup, reviewLayout = theme.section("Logs")
         viewOutputsBtn = QPushButton("View outputs")
         viewOutputsBtn.clicked.connect(self._openOutputFolder)
-        QVBoxLayout(reviewGroup).addLayout(buttonRow(self._buildLogButtons() + [viewOutputsBtn]))
+        reviewLayout.addLayout(buttonRow(self._buildLogButtons() + [viewOutputsBtn]))
+        layout.addWidget(theme.divider())
         layout.addWidget(reviewGroup)
 
-        nextGroup = QGroupBox("Finish")
+        nextGroup, nextLayout = theme.section("Finish")
         summaryBtn = QPushButton("Generate summary")
         summaryBtn.setToolTip("Write segment_summary.csv: one row per patient, AI model, output file and label.")
         summaryBtn.clicked.connect(self._generateSummary)
         nextBtn = QPushButton("Next")
         nextBtn.setToolTip("Go to the Model tab.")
         nextBtn.clicked.connect(lambda: self.host.goToTab("model"))
+        theme.markPrimary(nextBtn)
         nextRow = buttonRow([summaryBtn])
         nextRow.addWidget(nextBtn)      # after the stretch, so Next sits on the right
-        QVBoxLayout(nextGroup).addLayout(nextRow)
+        nextLayout.addLayout(nextRow)
+        layout.addWidget(theme.divider())
         layout.addWidget(nextGroup)
         layout.addStretch()
 
@@ -210,6 +227,8 @@ class SegmentTab(ManageRun):
         self.installBtn.setEnabled(self.installRadio.isChecked() and bool(ticked))
 
     def _install(self):
+        if not self.host.checkIdle():      # one run or install at a time
+            return
         installDir = self.installDirEdit.text().strip()
         ticked = self._tickedModels()
         if not installDir or not ticked:
@@ -228,13 +247,20 @@ class SegmentTab(ManageRun):
                 self._refreshStatus()
                 return
             names = ticked
+        weightsUrl = self.weightsUrlEdit.text().strip()
+        if weightsUrl and len(names) > 1:
+            QMessageBox.warning(self, "Install", "A weights URL applies to one AI model. "
+                                "Tick only the model the link is for.")
+            return
         nums = [self._modelRows[name]["num"] for name in names]
         self.installBtn.setEnabled(False)
         self.runBtn.setEnabled(False)
         self.progressBar.reset()        # clear the last run's progress
         self.stageLabel.setText("Starting install...")
+        self.stageLabel.setVisible(True)
         self.installProgress.setVisible(True)
-        self.installWorker = InstallWorker(nums, installDir, force=reinstall)
+        self.installWorker = InstallWorker(nums, installDir, force=reinstall,
+                                           installOptions={"weightsUrl": weightsUrl} if weightsUrl else None)
         self.installWorker.stage.connect(self.stageLabel.setText)
         self.installWorker.finishedOk.connect(lambda results: self._onInstallFinished(results, installDir))
         self.installWorker.failed.connect(self._onInstallFailed)
@@ -243,6 +269,9 @@ class SegmentTab(ManageRun):
     def _onInstallFinished(self, results, installDir):
         self.installProgress.setVisible(False)
         self.runBtn.setEnabled(True)
+        if self.installWorker.aborted:
+            self._onInstallAborted()
+            return
         failed = [(num, msg) for num, ok, msg in results if not ok]
         if failed:
             self.stageLabel.setText("Install failed.")
@@ -258,9 +287,17 @@ class SegmentTab(ManageRun):
     def _onInstallFailed(self, message):
         self.installProgress.setVisible(False)
         self.runBtn.setEnabled(True)
+        if self.installWorker.aborted:
+            self._onInstallAborted()
+            return
         self.stageLabel.setText("Install failed.")
         self._refreshStatus()
         QMessageBox.critical(self, "Install failed", message)
+
+    def _onInstallAborted(self):
+        """No pop-up after an abort: the window is closing."""
+        self.stageLabel.setText("Install aborted.")
+        self._refreshStatus()
 
     # Run
 

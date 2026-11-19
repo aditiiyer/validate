@@ -18,6 +18,7 @@ dependencies = [
     "pydicom",
     "PyYAML",
     "PyQt5",
+    "psutil",
 ]
 
 [project.urls]
@@ -38,3 +39,6 @@ packages = [
     "validate.modeling",
     "validate.seg",
 ]
+
+[tool.setuptools.package-data]
+"validate.gui" = ["*.svg"]

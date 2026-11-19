@@ -32,9 +32,10 @@ from validate import logs
 RESULT_COLUMNS = ["patient_id", "ntcp", "status", "message"]
 DERIVE_COLUMNS = ["patient_id", "status", "message"]
 AUTOSEG_SUFFIX = "_autoseg"
+ABORTED_MESSAGE = "Aborted by user"
 
 def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCallback=None, overwrite=False,
-                         shouldStop=None):
+                         shouldStop=None, isAborted=None):
     """Run the AI models in the settings (segment.ai_models) on every patient in the cohort.
 
     Each model's outputs are written to <analysisDir>/<patientId>/ and recorded in
@@ -54,6 +55,9 @@ def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCall
         overwrite (bool): if True, re-run models that already ran.
         shouldStop (callable): optional f() -> bool, checked before each patient;
             True stops the run there.
+        isAborted (callable): optional f() -> bool; True once the run was aborted (its
+            AI model processes killed). The patient being run is recorded as aborted,
+            and no further AI model is run.
 
     Returns:
         dict: {patientId: {aiModel: "ok"|"ok (cached)"|"error: <message>"}}
@@ -86,6 +90,8 @@ def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCall
         outDir = Path(analysisDir) / patientId
         patientResult = {}
         for modelNum, modelName in aiModels:
+            if isAborted and isAborted():
+                break
             if not overwrite and logs.isSegmented(analysisDir, taskLog, patientId, modelName):
                 patientResult[modelName] = "ok (cached)"
                 continue
@@ -104,9 +110,10 @@ def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCall
                               "labels": _readLabels(modelName, installDir, outDir)}
                     patientResult[modelName] = "ok"
                 except Exception as exc:
-                    errorLog.error(patientId, f"{modelName}: {exc}")
-                    result = {"status": "error", "message": str(exc)}
-                    patientResult[modelName] = f"error: {exc}"
+                    message = _errorMessage(exc, isAborted)
+                    errorLog.error(patientId, f"{modelName}: {message}")
+                    result = {"status": "error", "message": message}
+                    patientResult[modelName] = f"error: {message}"
                 finally:
                     shutil.rmtree(sessionDir, ignore_errors=True)
             logs.recordResult(analysisDir, taskLog, runIndex, patientId, "segment", result,
@@ -120,7 +127,7 @@ def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCall
     return results
 
 
-def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=None):
+def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=None, isAborted=None):
     """Apply a dosimetric model to every patient dataset in the cohort.
 
     For raw data, each patient's structures are taken from the settings file:
@@ -138,6 +145,8 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
             invoked after each patient is processed.
         shouldStop (callable): optional f() -> bool, checked before each patient;
             True stops the run there.
+        isAborted (callable): optional f() -> bool; True once the run was aborted.
+            A patient that fails after that is recorded as aborted.
 
     Returns:
         pandas.DataFrame with columns: patient_id, ntcp, status, message.
@@ -192,8 +201,8 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
                     ntcp = float(doseModels.run(patientModel, doseNum, planC, fSizeIn=fSizeIn, fNumIn=fNumIn))
             except Exception as exc:
                 status = "error"
-                message = str(exc)
-                errorLog.error(patientId, f"NTCP: {exc}")
+                message = _errorMessage(exc, isAborted)
+                errorLog.error(patientId, f"NTCP: {message}")
 
         rows.append({"patient_id": patientId, "ntcp": ntcp,
                      "status": status, "message": message})
@@ -212,7 +221,7 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
     return pd.DataFrame(rows, columns=RESULT_COLUMNS)
 
 
-def deriveStructuresForCohort(analysisDir, errorLog, progressCallback=None, shouldStop=None):
+def deriveStructuresForCohort(analysisDir, errorLog, progressCallback=None, shouldStop=None, isAborted=None):
     """Derive the structures set to "derive" in the settings for every patient,
     without computing NTCP (see deriveModelStructures).
 
@@ -226,6 +235,8 @@ def deriveStructuresForCohort(analysisDir, errorLog, progressCallback=None, shou
             invoked after each patient is processed.
         shouldStop (callable): optional f() -> bool, checked before each patient;
             True stops the run there.
+        isAborted (callable): optional f() -> bool; True once the run was aborted.
+            A patient that fails after that is recorded as aborted.
 
     Returns:
         pandas.DataFrame: One row per patient: patient_id, status ("ok" or "error"), message.
@@ -261,8 +272,8 @@ def deriveStructuresForCohort(analysisDir, errorLog, progressCallback=None, shou
                 deriveModelStructures(record, patientInfo, inputs.recipes, inputs.deriveNames,
                                       analysisDir, taskLog, derivedFiles)
             except Exception as exc:
-                result = {"status": "error", "message": str(exc)}
-                errorLog.error(patientId, f"Derive: {exc}")
+                result = {"status": "error", "message": _errorMessage(exc, isAborted)}
+                errorLog.error(patientId, f"Derive: {result['message']}")
 
         rows.append({"patient_id": patientId, "status": result["status"], "message": result.get("message", "")})
         logs.recordResult(analysisDir, taskLog, runIndex, patientId, "segment",
@@ -334,6 +345,12 @@ def _modelInputs(settingsPath):
         patientInfoDf=loadPatientInfo(planStructuresCsv) if planStructuresCsv else None,
         recipes=recipes,
         deriveNames=_deriveOrder(name for name in requiredStructs if recipes[name].get("source") == "derive"))
+
+
+def _errorMessage(exc, isAborted):
+    """The message recorded for a patient's error: ABORTED_MESSAGE if the run was
+    aborted (the error is then from its killed processes), else the error's text."""
+    return ABORTED_MESSAGE if isAborted and isAborted() else str(exc)
 
 
 def _useAIModel(aiModel, installDir):

@@ -6,7 +6,7 @@ from pathlib import Path
 from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar, QGroupBox, QMessageBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar, QMessageBox
 )
 
 from validate.gui import theme
@@ -53,9 +53,7 @@ class ManageRun(QWidget):
         Returns:
             QGroupBox: The Run section.
         """
-        runGroup = QGroupBox("Run")
-        runLayout = QVBoxLayout(runGroup)
-        runLayout.setSpacing(10)
+        runGroup, runLayout = theme.section("Run")
         runLayout.addLayout(buttonRow(self._buildRunButtons() + self._buildLogButtons() + list(extraButtons)))
         self._addProgress(runLayout)
         return runGroup
@@ -80,10 +78,12 @@ class ManageRun(QWidget):
         return [viewTaskLogBtn, viewErrorLogBtn]
 
     def _addProgress(self, layout):
-        """The stage message and progress bar."""
+        """The stage message and progress bar, hidden until the first run."""
         self.stageLabel = QLabel("")
+        self.stageLabel.setVisible(False)
         layout.addWidget(self.stageLabel)
         self.progressBar = QProgressBar()
+        self.progressBar.setVisible(False)
         layout.addWidget(self.progressBar)
 
     # Running
@@ -91,7 +91,7 @@ class ManageRun(QWidget):
     def _onRun(self):
         """Start a run: save the settings (asking first), check they haven't changed
         since this tab's results were made, then start the tab's worker."""
-        if self.worker is not None and self.worker.isRunning():
+        if not self.host.checkIdle():      # one run at a time across the window
             return
         if not self.host.ensureSaved(required=True):
             return
@@ -110,6 +110,8 @@ class ManageRun(QWidget):
         self.progressBar.setValue(0)
         self.progressBar.setFormat("%p%")
         self.stageLabel.setText("Starting...")
+        self.stageLabel.setVisible(True)
+        self.progressBar.setVisible(True)
         self._setRunning(True)
         worker.start()
 
@@ -182,7 +184,8 @@ class ManageRun(QWidget):
         self._errorLogPath = errorLogPath
         self._setRunning(False)
         stopped = self.worker is not None and self.worker._stopRequested
-        self.stageLabel.setText("Stopped." if stopped else "Done.")
+        aborted = self.worker is not None and self.worker.aborted
+        self.stageLabel.setText("Aborted." if aborted else "Stopped." if stopped else "Done.")
 
     def _onFailed(self, message, errorLogPath):
         """Show that the run failed, with its error message.
@@ -193,6 +196,9 @@ class ManageRun(QWidget):
         """
         self._errorLogPath = errorLogPath
         self._setRunning(False)
+        if self.worker is not None and self.worker.aborted:
+            self.stageLabel.setText("Aborted.")     # no pop-up: the window is closing
+            return
         self.stageLabel.setText("Failed.")
         QMessageBox.critical(self, "Run failed", message)
 

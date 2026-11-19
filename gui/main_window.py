@@ -1,5 +1,5 @@
-"""Main window: the shared settings (analysis folder, data folder, dosimetric model)
-above the Segment, Model and Review tabs.
+"""Main window: the shared settings (data folder, plan info, dosimetric model, analysis
+folder) above the Segment, Model and Review tabs.
 
 The settings in the form are written to <analysis folder>/analysis.yaml only after the
 user confirms, in a pop-up shown before a run, a tab switch or closing the window
@@ -14,7 +14,8 @@ from importlib.metadata import version, PackageNotFoundError
 
 from PyQt5.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QComboBox, QFileDialog, QGroupBox, QMessageBox, QDialog, QDialogButtonBox
+    QPushButton, QComboBox, QFileDialog, QMessageBox, QDialog, QDialogButtonBox, QToolButton,
+    QRadioButton, QButtonGroup
 )
 
 from cerr.roe import dosimetric_models as doseModels
@@ -22,13 +23,23 @@ from cerr.roe import dosimetric_models as doseModels
 from validate.gui.segment_tab import SegmentTab
 from validate.gui.model_tab import ModelTab
 from validate.gui.performance_tab import PerformanceTab
-from validate.gui.progress_and_logging import LABEL_WIDTH
 from validate.gui import theme
 from validate.core import analysis
 from validate.data_io.read_inputs import discoverPatients, inferFileFormat
 from validate import logs
 
 TAB_NAMES = ["segment", "model", "review"]
+HEADER_LABEL_WIDTH = 80     # Start from / Data / Plan info / Model / Output labels
+PLAN_INFO_HELP = "Optional. Plan names, fractionation, scan files, existing structures (per case)."
+PLAN_INFO_DETAILS = (
+    "One row per patient. Only ID is required.\n\n"
+    "ID: patient folder name.\n"
+    "Plan name: RTDOSE file name, if a patient has more than one dose (DICOM).\n"
+    "Prescribed dose (Gy), Fraction size (Gy), Fraction number: any two, if the model "
+    "needs fractionation correction.\n"
+    "Scan file, Dose file: file name or pattern (NIfTI/NRRD). Segment needs Scan file.\n"
+    "<structure>: one column per structure the model needs, giving its name in the "
+    "RTSTRUCT (DICOM), or its mask file or \"file:label\" (NIfTI/NRRD).")
 
 
 class MainWindow(QMainWindow):
@@ -42,16 +53,19 @@ class MainWindow(QMainWindow):
         self._loaded = None          # settings last read from analysis.yaml
         self._modelFiles = {}        # model name -> file, for models from loaded settings
         self._prevDefaultDir = ""    # the default analysis folder last filled in
+        self._closePending = False   # closing once the run in progress stops
 
         central = QWidget()
         centralLayout = QVBoxLayout(central)
+        centralLayout.setSpacing(24)
         centralLayout.addWidget(self._buildHeader())
 
         self.tabs = QTabWidget()
         # Set the tab bar's actual font (not just a QSS font-size) so Qt's
         # tab-size-hint calculation matches what's rendered -- otherwise the
         # reserved tab width lags the larger stylesheet font and clips text.
-        self.tabs.tabBar().setFont(theme.headingFont(self.tabs.tabBar()))
+        self.tabs.tabBar().setFont(theme.tabFont(self.tabs.tabBar()))
+        self.tabs.tabBar().setStyleSheet(theme.TAB_BAR_STYLE)
         self.segmentTab = SegmentTab(self)
         self.tabs.addTab(self.segmentTab, "Segment")
         self.modelTab = ModelTab(self)
@@ -66,13 +80,10 @@ class MainWindow(QMainWindow):
         self._onModelChanged()
 
     def _buildHeader(self):
-        header = QGroupBox("Analysis")
-        headerLayout = QVBoxLayout(header)
-        headerLayout.setSpacing(10)
+        header, headerLayout = theme.section("Analysis")
 
         self.dataDirEdit = QLineEdit()
-        self.dataDirEdit.setPlaceholderText("Cohort directory (one DICOM subdirectory per patient); "
-                                            "empty for pre-computed predictors.")
+        self.dataDirEdit.setPlaceholderText("Cohort directory (one subdirectory per patient).")
         self.dataDirEdit.editingFinished.connect(self._onDataDirChanged)
         self.analysisDirEdit = QLineEdit()
         self.analysisDirEdit.setPlaceholderText("Holds analysis settings, logs, and results.")
@@ -80,11 +91,40 @@ class MainWindow(QMainWindow):
         dataRow = self._folderRow("Data:", self.dataDirEdit, self._browseDataDir)
         outputRow = self._folderRow("Output:", self.analysisDirEdit, self._browseAnalysisDir)
 
+        # Plan info is used by both tabs (Segment reads the scan file names from it)
+        self.planInfoEdit = QLineEdit()
+        self.planInfoEdit.setPlaceholderText(PLAN_INFO_HELP)
+        self.planInfoEdit.setToolTip(PLAN_INFO_HELP)
+        planRow = self._folderRow("Plan info:", self.planInfoEdit, self._browsePlanInfo, "Select CSV")
+        planInfoBtn = QToolButton()
+        planInfoBtn.setText("i")
+        planInfoBtn.setToolTip(PLAN_INFO_DETAILS)
+        planRow.addWidget(planInfoBtn)
+
+        # Start from images (Data, Plan info, Segment, structures) or pre-computed predictors
+        startRow = QHBoxLayout()
+        startLabel = QLabel("Start from:")
+        startLabel.setFixedWidth(HEADER_LABEL_WIDTH)
+        self.imagesRadio = QRadioButton("Data (DICOM/NIfTI)")
+        self.predictorsRadio = QRadioButton("Pre-computed predictors")
+        startGroup = QButtonGroup(header)
+        startGroup.addButton(self.imagesRadio)
+        startGroup.addButton(self.predictorsRadio)
+        self.imagesRadio.setChecked(True)
+        self.predictorsRadio.toggled.connect(self._onStartFromToggled)
+        startRow.addWidget(startLabel)
+        startRow.addWidget(self.imagesRadio)
+        startRow.addSpacing(16)
+        startRow.addWidget(self.predictorsRadio)
+        startRow.addStretch()
+        self._imageRows = (dataRow, planRow)
+
+        headerLayout.addLayout(startRow)
         headerLayout.addLayout(dataRow)
+        headerLayout.addLayout(planRow)
         modelRow = QHBoxLayout()
         modelLabel = QLabel("Model:")
-        modelLabel.setFont(theme.headingFont(modelLabel))
-        modelLabel.setMinimumWidth(LABEL_WIDTH)
+        modelLabel.setFixedWidth(HEADER_LABEL_WIDTH)
         self.modelCombo = QComboBox()
         self.modelCombo.addItems(doseModels.listModels())
         defaultIdx = self.modelCombo.findText("Xerostomia (grade 2+)")
@@ -98,12 +138,11 @@ class MainWindow(QMainWindow):
         headerLayout.addLayout(outputRow)
         return header
 
-    def _folderRow(self, label, edit, onBrowse):
+    def _folderRow(self, label, edit, onBrowse, buttonText="Browse..."):
         row = QHBoxLayout()
         rowLabel = QLabel(label)
-        rowLabel.setFont(theme.headingFont(rowLabel))
-        rowLabel.setMinimumWidth(LABEL_WIDTH)
-        browseBtn = QPushButton("Browse...")
+        rowLabel.setFixedWidth(HEADER_LABEL_WIDTH)
+        browseBtn = QPushButton(buttonText)
         browseBtn.clicked.connect(onBrowse)
         row.addWidget(rowLabel)
         row.addWidget(edit)
@@ -115,8 +154,17 @@ class MainWindow(QMainWindow):
     def analysisDir(self):
         return self.analysisDirEdit.text().strip() or None
 
+    def fromPredictors(self):
+        """True when starting from pre-computed predictors rather than images."""
+        return self.predictorsRadio.isChecked()
+
     def dataDir(self):
-        return self.dataDirEdit.text().strip() or None
+        """The cohort folder; None when starting from pre-computed predictors."""
+        return None if self.fromPredictors() else (self.dataDirEdit.text().strip() or None)
+
+    def planInfo(self):
+        """The plan info CSV; None when starting from pre-computed predictors."""
+        return None if self.fromPredictors() else (self.planInfoEdit.text().strip() or None)
 
     def modelName(self):
         return self.modelCombo.currentText()
@@ -141,6 +189,25 @@ class MainWindow(QMainWindow):
         except ValueError:
             return None
 
+    def runningTask(self):
+        """(label, thread, tab) for the run or AI model install in progress, or None.
+        Only one runs at a time, since each run rewrites task_log.yaml."""
+        for label, thread, tab in (("A Segment run", self.segmentTab.worker, self.segmentTab),
+                                   ("A Model run", self.modelTab.worker, self.modelTab),
+                                   ("An AI model install", self.segmentTab.installWorker, self.segmentTab)):
+            if thread is not None and thread.isRunning():
+                return label, thread, tab
+        return None
+
+    def checkIdle(self):
+        """True if nothing is running; otherwise say what is, and return False."""
+        task = self.runningTask()
+        if task is None:
+            return True
+        QMessageBox.information(self, "Run in progress",
+                                f"{task[0]} is in progress. Wait for it to finish, or stop it.")
+        return False
+
     def goToTab(self, name):
         self.tabs.setCurrentIndex(TAB_NAMES.index(name))
 
@@ -163,12 +230,54 @@ class MainWindow(QMainWindow):
             self.dataDirEdit.setText(path)
             self._onDataDirChanged()
 
+    def _browsePlanInfo(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select plan info CSV", self.dataDir() or "",
+                                              "CSV files (*.csv)")
+        if path:
+            self.planInfoEdit.setText(path)
+
     def _defaultAnalysisDir(self, modelName=None):
-        dataDir = self.dataDir()
-        return os.path.join(dataDir, f"analysis_{modelName or self.modelName()}") if dataDir else None
+        """<Data Dir>/analysis_<model>, or <predictors CSV folder>/analysis_<model> when
+        starting from pre-computed predictors; None without either."""
+        if self.fromPredictors():
+            predictorsCsv = self.modelTab.predictorsCsv()
+            baseDir = os.path.dirname(os.path.abspath(predictorsCsv)) if predictorsCsv else None
+        else:
+            baseDir = self.dataDir()
+        return os.path.join(baseDir, f"analysis_{modelName or self.modelName()}") if baseDir else None
+
+    def _onStartFromToggled(self):
+        self._applyStartFrom()
+        self._onDataDirChanged()
+
+    def _applyStartFrom(self):
+        """Starting from pre-computed predictors grays out Data, Plan info, the Segment
+        tab and the Model tab's structures (their contents are kept, but not saved)."""
+        fromPredictors = self.fromPredictors()
+        for row in self._imageRows:
+            for i in range(row.count()):
+                widget = row.itemAt(i).widget()
+                if widget is not None:
+                    widget.setEnabled(not fromPredictors)
+        segmentIndex = TAB_NAMES.index("segment")
+        if fromPredictors and self.tabs.currentIndex() == segmentIndex:
+            # Switch without the save prompt: the mode change isn't a tab switch by the user
+            self.tabs.blockSignals(True)
+            self.goToTab("model")
+            self.tabs.blockSignals(False)
+            self._currentTab = self.tabs.currentIndex()
+        self.tabs.setTabEnabled(segmentIndex, not fromPredictors)
+        self.modelTab.setFromPredictors(fromPredictors)
+
+    def onPredictorsCsvChanged(self):
+        """Called by the Model tab: the predictors CSV sets the default analysis
+        folder when starting from pre-computed predictors."""
+        if self.fromPredictors():
+            self._onDataDirChanged()
 
     def _onDataDirChanged(self):
-        """The analysis folder defaults to <Data Dir>/analysis_<model>, unless one was chosen."""
+        """The analysis folder defaults to <Data Dir>/analysis_<model> (see
+        _defaultAnalysisDir), unless one was chosen."""
         default = self._defaultAnalysisDir() or ""
         if self.analysisDirEdit.text().strip() in ("", self._prevDefaultDir) and default != self._prevDefaultDir:
             self._prevDefaultDir = default
@@ -185,7 +294,7 @@ class MainWindow(QMainWindow):
         if self._loaded is None:
             # Nothing saved yet: keep a default analysis folder in step with the model
             self._currentModel = modelName
-            if self.analysisDirEdit.text().strip() in ("", self._prevDefaultDir) and self.dataDir():
+            if self.analysisDirEdit.text().strip() in ("", self._prevDefaultDir) and self._defaultAnalysisDir(modelName):
                 self._prevDefaultDir = self._defaultAnalysisDir()
                 self.analysisDirEdit.setText(self._prevDefaultDir)
                 self._loadSettings()
@@ -252,7 +361,12 @@ class MainWindow(QMainWindow):
             self._onModelChanged()
             return
         inputs = settings.get("input") or {}
+        self.predictorsRadio.blockSignals(True)
+        (self.predictorsRadio if inputs.get("start_from") == "predictors" else self.imagesRadio).setChecked(True)
+        self.predictorsRadio.blockSignals(False)
+        self._applyStartFrom()
         self.dataDirEdit.setText(inputs.get("data_dir") or "")
+        self.planInfoEdit.setText(inputs.get("plan_structures_csv") or "")
         model = settings.get("model") or {}
         if model.get("name"):
             if model.get("file"):
@@ -278,10 +392,11 @@ class MainWindow(QMainWindow):
         dataDir = self.dataDir()
         segmentPart = self.segmentTab.settingsPart()
         modelPart = self.modelTab.settingsPart()
-        fromPredictors = dataDir is None
+        fromPredictors = self.fromPredictors()
         return {
             "input": {"start_from": "predictors" if fromPredictors else self._startFrom(dataDir),
                       "data_dir": dataDir,
+                      "plan_structures_csv": self.planInfo(),
                       **modelPart["input"],
                       # Not set in the GUI; kept from the loaded settings
                       "outcomes_csv": ((self._loaded or {}).get("input") or {}).get("outcomes_csv")},
@@ -331,7 +446,11 @@ class MainWindow(QMainWindow):
         analysisDir = self.analysisDir()
         if analysisDir is None:
             if required:
-                QMessageBox.warning(self, "Analysis folder", "Choose an analysis folder (or a Data Dir) first.")
+                QMessageBox.warning(self, "Analysis folder", "Choose an analysis folder first.")
+            return not required
+        if not self.fromPredictors() and self.dataDir() is None:
+            if required:
+                QMessageBox.warning(self, "Data", "Select input Data folder.")
             return not required
         try:
             old = analysis.readSettings(analysisDir)
@@ -342,6 +461,11 @@ class MainWindow(QMainWindow):
         new = self.formSettings()
         if old == new:
             return True
+        task = self.runningTask()
+        if task is not None:
+            QMessageBox.information(self, "Run in progress", f"{task[0]} is in progress. "
+                                    f"Settings can't be saved until it finishes or is stopped.")
+            return False
 
         lines = []
         clearedTabs = [tab for tab in logs.TABS
@@ -385,6 +509,13 @@ class MainWindow(QMainWindow):
         self._currentTab = index
 
     def closeEvent(self, event):
+        task = self.runningTask()
+        if task is not None:
+            event.ignore()
+            if not self._closePending and self._askAbortAndClose(*task):
+                self._closePending = True
+                task[1].finished.connect(self.close)    # close once it stops
+            return
         # Only an analysis whose settings were saved before is asked about; otherwise just close
         analysisDir = self.analysisDir()
         started = analysisDir is not None and os.path.exists(os.path.join(analysisDir, analysis.FILE_NAME))
@@ -392,6 +523,25 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+    def _askAbortAndClose(self, label, thread, tab):
+        """Ask to abort the run or install in progress (its processes are killed;
+        the patient being run is recorded as aborted) and close once it stops.
+        Returns True to close."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Run in progress")
+        box.setText(f"{label} is in progress.\n\nAbort it and close? It stops immediately"
+                    + ("; Install again later to finish it." if tab is self.segmentTab and thread is
+                       self.segmentTab.installWorker else "; the current patient is recorded as aborted."))
+        abortBtn = box.addButton("Abort and close", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        box.exec_()
+        if box.clickedButton() is not abortBtn:
+            return False
+        tab.stageLabel.setText("Aborting...")
+        thread.abort()
+        return True
 
 
 def _hasResults(taskLog, tab):
