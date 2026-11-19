@@ -12,16 +12,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `installMissingModels` passes extra options (such as `weightsUrl`) on to pyCERR's
   `install_utils`.
 - README.md, CHANGELOG.md and LICENSE.
+- Header: "Start from" choice, Data (DICOM/NIfTI) or Pre-computed predictors. 
+- Segment tab: "Weights URL" field, to install an AI model's weights from a download link
+  (one model at a time). The link is not saved to `analysis.yaml`.
+- `psutil` dependency, used to abort runs and installs.
+- Tests for aborting runs and installs.
+
+### Changed
+
+- GUI redesign: altered layout, spacing, tab appearance; disabled controls keep their state visible.
+- Font sizes follow the platform's default font (at least 10 pt) for legible display across different OS.
+- Plan info moved to the header (shared by Segment and Model tabs).
+- Only one run or install at a time; settings can't be saved while one is in progress.
+- Model tab: structures default to Derive where a recipe is registered.
+- Oral cavity, Submandibular glands and Parotids-SCRR are derived from CT_HN_SMIT
+  (model 7) outputs instead of CT_HeadAndNeck_OARs (model 3).
 
 ### Fixed
 
 - Analysis folders inside the cohort directory are no longer counted as patients.
+- NRRD scans are converted to NIfTI for the AI models, which read only NIfTI or DICOM.
 
 ## [0.5.0] - 2026-11-13
 
 ### Added
 
-- Function to derive all modelled structures for one patient (`deriveModelStructures`),
+- Function to derive all modeled structures for one patient (`deriveModelStructures`),
   used by the Model run, and a derive-only cohort run (`deriveStructuresForCohort`).
 - Derived structure exports are recorded in the task log, under each patient's
   `segment` section, and included in the summary CSV.

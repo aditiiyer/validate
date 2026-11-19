@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "validate"
-version = "0.1.0"
+version = "0.5.0"
 description = "Apply NTCP models to a patient cohort and review their calibration and performance."
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
