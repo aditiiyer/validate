@@ -1,6 +1,7 @@
 """Tests 6, 8, 9, 10: reading patient inputs (data_io/read_inputs.py)."""
 
 import re
+import warnings
 from types import SimpleNamespace
 
 import pandas as pd
@@ -36,10 +37,14 @@ def test_mixedFormatsRaise(tmp_path):
         inferFileFormat(tmp_path)
 
 
+def _writeFiles(folder, names):
+    for name in names:
+        (folder / name).write_text("x")
+
+
 @pytest.mark.parametrize("fileNames", [[], ["notes.txt"]], ids=["empty", "no image files"])
 def test_noImageFilesRaise(tmp_path, fileNames):
-    for name in fileNames:
-        (tmp_path / name).write_text("x")
+    _writeFiles(tmp_path, fileNames)
     with pytest.raises(ValueError, match="No DICOM, NIfTI or NRRD files found"):
         inferFileFormat(tmp_path)
 
@@ -65,8 +70,10 @@ def _row(**values):
     (_row(size="2"), (2.0, None)),
     (_row(rx="70"), (None, None)),
     (_row(rx="", size=" ", num=None), (None, None)),
+    pytest.param(_row(rx="70", size="3"), (3.0, pytest.approx(70 / 3)),
+                 marks=pytest.mark.filterwarnings("ignore:.*is not a whole number")),
 ], ids=["all given", "size from rx and num", "num from rx and size", "no rx",
-        "size only", "rx only", "blank cells"])
+        "size only", "rx only", "blank cells", "non-whole fraction number"])
 def test_fractionation(row, expected):
     assert getFractionation(row) == expected
 
@@ -75,16 +82,13 @@ def test_noPlanRow():
     assert getFractionation(None) == (None, None)
 
 
-def test_nonWholeFractionNumberWarns():
-    with pytest.warns(UserWarning, match="is not a whole number"):
-        fxSize, fxNum = getFractionation(_row(rx="70", size="3"))
-    assert fxSize == 3.0
-    assert fxNum == pytest.approx(70 / 3)
-
-
-def test_wholeFractionNumberDoesNotWarn(recwarn):
-    getFractionation(_row(rx="70", size="2"))
-    assert not [w for w in recwarn if "whole number" in str(w.message)]
+@pytest.mark.parametrize("size, warned", [("3", True), ("2", False)],
+                         ids=["70/3 fractions", "70/2 fractions"])
+def test_warnsIfFractionNumberNotWhole(size, warned):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        getFractionation(_row(rx="70", size=size))
+    assert any("is not a whole number" in str(w.message) for w in caught) == warned
 
 
 # 9. A non-numeric value gives a clear error

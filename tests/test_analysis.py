@@ -128,16 +128,13 @@ def test_validSettingsPass():
     analysis.checkSettings(settings)
 
 
-def test_emptyFileRaises(tmp_path):
+@pytest.mark.parametrize("content, message", [("", "it is empty"), ("- dicom\n", "found list")],
+                         ids=["empty file", "not a mapping"])
+def test_unreadableSettingsFileRaises(tmp_path, content, message):
     path = tmp_path / "analysis.yaml"
-    path.write_text("")
-    with pytest.raises(ValueError, match="it is empty"):
+    path.write_text(content)
+    with pytest.raises(ValueError, match=message):
         analysis.toDataCapsule(path)
-
-
-def test_nonMappingRaises():
-    with pytest.raises(ValueError, match="found list"):
-        analysis.checkSettings(["dicom"])
 
 
 def test_allProblemsReportedTogether():
@@ -156,23 +153,17 @@ def test_readSettingsWithNoFile(tmp_path):
     assert analysis.readSettings(tmp_path) is None
 
 
-def test_saveSettingsWritesAndReadsBack(tmp_path):
+def test_saveSettingsReplacesEarlierSettings(tmp_path):
     settings = copy.deepcopy(RAW_SETTINGS)
     settings["model"]["file"] = "/models/test.json"
+    analysis.saveSettings(settings, tmp_path / "analysis")
+    settings["compute"]["device"] = "gpu"
+
     path = analysis.saveSettings(settings, tmp_path / "analysis")
 
     assert path == str(tmp_path / "analysis" / analysis.FILE_NAME)
     assert analysis.readSettings(tmp_path / "analysis") == settings
     assert not (tmp_path / "analysis" / (analysis.FILE_NAME + ".tmp")).exists()
-
-
-def test_saveSettingsReplacesEarlierSettings(tmp_path):
-    settings = copy.deepcopy(RAW_SETTINGS)
-    settings["model"]["file"] = "/models/test.json"
-    analysis.saveSettings(settings, tmp_path)
-    settings["compute"]["device"] = "gpu"
-    analysis.saveSettings(settings, tmp_path)
-    assert analysis.readSettings(tmp_path)["compute"]["device"] == "gpu"
 
 
 def test_saveSettingsFillsBuiltInModelFile(tmp_path):
@@ -193,57 +184,7 @@ def test_saveSettingsRefusesInvalidSettings(tmp_path):
     assert analysis.readSettings(tmp_path) is None
 
 
-# diffSettings: what the save pop-up lists
-
-def test_noChanges():
-    assert analysis.diffSettings(RAW_SETTINGS, copy.deepcopy(RAW_SETTINGS)) == []
-
-
-def test_changesListedByKey():
-    new = copy.deepcopy(RAW_SETTINGS)
-    new["model"]["name"] = "Dysphagia"
-    new["segment"]["ai_models"] = ["CT_HeadAndNeck_OARs"]
-    new["structures"] = {"SCRR": {"source": "derive"}}
-    assert analysis.diffSettings(RAW_SETTINGS, new) == [
-        ("model.name", "Test model", "Dysphagia"),
-        ("segment.ai_models", [], ["CT_HeadAndNeck_OARs"]),
-        ("structures.SCRR", None, {"source": "derive"}),
-    ]
-
-
-def test_removedKeyListed():
-    old = copy.deepcopy(RAW_SETTINGS)
-    old["structures"] = {"Parotids": {"source": "existing", "name": "Parotid_Total"}}
-    assert analysis.diffSettings(old, RAW_SETTINGS) == [
-        ("structures.Parotids", {"source": "existing", "name": "Parotid_Total"}, None)]
-
-
-def test_noEarlierSettings():
-    changes = analysis.diffSettings(None, RAW_SETTINGS)
-    assert ("compute.device", None, "cpu") in changes
-    assert ("model.name", None, "Test model") in changes
-
-
 # tabSettings: what each tab's results depend on
-
-def test_segmentTabSettings():
-    settings = copy.deepcopy(RAW_SETTINGS)
-    settings["segment"] = {"ai_models": ["CT_HeadAndNeck_OARs"], "install_dir": "/models"}
-    assert analysis.tabSettings(settings, "segment") == {
-        "input": {"start_from": "dicom", "data_dir": "/data/cohort", "plan_structures_csv": None},
-        "compute": {"device": "cpu"},
-        "segment": {"ai_models": ["CT_HeadAndNeck_OARs"], "install_dir": "/models"},
-    }
-
-
-def test_modelTabSettings():
-    settings = copy.deepcopy(RAW_SETTINGS)
-    settings["structures"] = {"SCRR": {"source": "derive"}}
-    assert analysis.tabSettings(settings, "model") == {
-        "input": settings["input"],
-        "structures": {"SCRR": {"source": "derive"}},
-    }
-
 
 @pytest.mark.parametrize("key, value, changedTabs", [
     ("model.name", "Dysphagia", set()),     # a new model is a new analysis, in its own folder

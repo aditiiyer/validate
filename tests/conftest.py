@@ -28,6 +28,15 @@ def writeYaml(path, data):
     return path
 
 
+@pytest.fixture(autouse=True)
+def noExternalCommands(monkeypatch):
+    """Keep tests hermetic and fast: provenance and hardware commands (git,
+    nvidia-smi) aren't run, as on a machine without git checkouts or GPUs.
+    Tests of their output stub logs._run themselves."""
+    from validate import logs
+    monkeypatch.setattr(logs, "_run", lambda cmd: None)
+
+
 @pytest.fixture
 def analysisDir(tmp_path):
     """An analysis folder holding analysis.yaml and a model file (model.json)."""

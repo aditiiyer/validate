@@ -167,8 +167,7 @@ def readSettings(analysisDir):
 def saveSettings(analysisDict, analysisDir):
     """Write analysisDict to analysisDir's analysis.yaml, replacing any earlier settings.
 
-    Only called once the user has confirmed the changes (see diffSettings) and the
-    settings have been checked.
+    Only called once the user has confirmed saving, and the settings have been checked.
 
     Returns:
         str: path to analysis.yaml.
@@ -188,31 +187,6 @@ def saveSettings(analysisDict, analysisDir):
         yaml.safe_dump(analysisDict, f, sort_keys=False)
     os.replace(tmpPath, path)
     return path
-
-
-def diffSettings(old, new):
-    """List the settings that differ between old and new (either may be None).
-
-    Returns:
-        list of (key, oldValue, newValue), key in dotted form (e.g. "model.name"),
-        in the order the keys appear. A value missing on one side is None.
-    """
-    changes = []
-    _diff(old or {}, new or {}, "", changes)
-    return changes
-
-
-def _diff(old, new, prefix, changes):
-    for key in list(old) + [k for k in new if k not in old]:
-        oldVal, newVal = old.get(key), new.get(key)
-        path = f"{prefix}{key}"
-        # Sections are compared key by key, even when one side has no such section yet
-        bothDicts = isinstance(oldVal, dict) and isinstance(newVal, dict)
-        newSection = not prefix and (oldVal is None or newVal is None) and isinstance(oldVal or newVal, dict)
-        if bothDicts or newSection:
-            _diff(oldVal or {}, newVal or {}, path + ".", changes)
-        elif oldVal != newVal:
-            changes.append((path, oldVal, newVal))
 
 
 def tabSettings(analysisDict, tab):

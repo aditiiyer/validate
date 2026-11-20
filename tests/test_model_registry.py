@@ -3,6 +3,7 @@
 import os
 
 import pytest
+import yaml
 
 from cerr.ai_models import install_utils
 
@@ -45,43 +46,46 @@ def test_unchangedWeightsNotHashedAgain(install, monkeypatch):
     assert model_registry.getWeightsHash(MODEL_NUM) == stored
 
 
-def test_changedWeightsHashedAgain(install):
-    installDir, weightsDir, modelName = install
+def _writeWeightsFile(weightsDir, modelName):
+    (weightsDir / f"{modelName}.pt").write_bytes(b"weights v1")
+
+
+def _writeWeightsFolder(weightsDir, modelName):
+    (weightsDir / modelName / "fold0").mkdir(parents=True)
+    (weightsDir / modelName / "fold0" / "model.pt").write_bytes(b"a")
+    (weightsDir / modelName / "plans.json").write_bytes(b"b")
+
+
+def _replaceWithLargerFile(weightsDir, modelName):
+    (weightsDir / f"{modelName}.pt").write_bytes(b"weights v2, longer")
+
+
+def _replaceWithSameSizeNewerFile(weightsDir, modelName):
     weightsFile = weightsDir / f"{modelName}.pt"
-    weightsFile.write_bytes(b"weights v1")
-    model_registry.recordInstall(MODEL_NUM, modelName, installDir)
-    oldHash = model_registry.getWeightsHash(MODEL_NUM)
-
-    weightsFile.write_bytes(b"weights v2, longer")
-    newHash = model_registry.getWeightsHash(MODEL_NUM)
-    assert newHash != oldHash
-    assert model_registry.readRegistry()[str(MODEL_NUM)]["weightsSha256"] == newHash
-
-
-def test_sameSizeChangeDetectedByModificationTime(install):
-    installDir, weightsDir, modelName = install
-    weightsFile = weightsDir / f"{modelName}.pt"
-    weightsFile.write_bytes(b"weights v1")
-    model_registry.recordInstall(MODEL_NUM, modelName, installDir)
-    oldHash = model_registry.getWeightsHash(MODEL_NUM)
-
     weightsFile.write_bytes(b"weights v2")
     later = os.stat(weightsFile).st_mtime + 10
     os.utime(weightsFile, (later, later))
-    assert model_registry.getWeightsHash(MODEL_NUM) != oldHash
 
 
-def test_weightsFolderHashed(install):
+def _changeFileInFolder(weightsDir, modelName):
+    (weightsDir / modelName / "plans.json").write_bytes(b"changed")
+
+
+@pytest.mark.parametrize("writeWeights, changeWeights", [
+    (_writeWeightsFile, _replaceWithLargerFile),
+    (_writeWeightsFile, _replaceWithSameSizeNewerFile),
+    (_writeWeightsFolder, _changeFileInFolder),
+], ids=["larger file", "same size, newer file", "file in weights folder"])
+def test_changedWeightsHashedAgain(install, writeWeights, changeWeights):
     installDir, weightsDir, modelName = install
-    folder = weightsDir / modelName
-    (folder / "fold0").mkdir(parents=True)
-    (folder / "fold0" / "model.pt").write_bytes(b"a")
-    (folder / "plans.json").write_bytes(b"b")
+    writeWeights(weightsDir, modelName)
     model_registry.recordInstall(MODEL_NUM, modelName, installDir)
-    firstHash = model_registry.getWeightsHash(MODEL_NUM)
+    oldHash = model_registry.getWeightsHash(MODEL_NUM)
 
-    (folder / "plans.json").write_bytes(b"changed")
-    assert model_registry.getWeightsHash(MODEL_NUM) != firstHash
+    changeWeights(weightsDir, modelName)
+    newHash = model_registry.getWeightsHash(MODEL_NUM)
+    assert newHash != oldHash
+    assert model_registry.readRegistry()[str(MODEL_NUM)]["weightsSha256"] == newHash
 
 
 def test_weightsNotInstalled(install):
@@ -103,14 +107,6 @@ def test_modelNotRecorded(install):
     assert model_registry.getWeightsHash(MODEL_NUM) is None
 
 
-def test_installStatusUsesPyCERRLayout(install):
-    installDir, weightsDir, modelName = install
-    model_registry.recordInstall(MODEL_NUM, modelName, installDir)
-    assert model_registry.getInstallInfo(MODEL_NUM)[0] is False      # no weights yet
-    (weightsDir / f"{modelName}.pt").write_bytes(b"weights v1")
-    assert model_registry.getInstallInfo(MODEL_NUM)[0] is True
-
-
 def test_useInstallRecordsNewFolder(install):
     installDir, weightsDir, modelName = install
     (weightsDir / f"{modelName}.pt").write_bytes(b"weights v1")
@@ -120,12 +116,17 @@ def test_useInstallRecordsNewFolder(install):
     assert entry["weightsSha256"]
 
 
-def test_useInstallKeepsSameFolder(install, monkeypatch):
+def test_useInstallKeepsSameFolder(install):
     installDir, weightsDir, modelName = install
     (weightsDir / f"{modelName}.pt").write_bytes(b"weights v1")
     model_registry.recordInstall(MODEL_NUM, modelName, installDir)
-    monkeypatch.setattr(model_registry, "recordInstall", lambda *args: pytest.fail("recorded again"))
+    registry = model_registry.readRegistry()
+    registry[str(MODEL_NUM)]["installDate"] = "2000-01-01T00:00:00+00:00"   # marks the existing record
+    model_registry.REGISTRY_PATH.write_text(yaml.safe_dump(registry))
+
     model_registry.useInstall(MODEL_NUM, modelName, installDir)
+
+    assert model_registry.readRegistry() == registry       # not recorded again
 
 
 def test_useInstallRefusesFolderWithoutWeights(install):
@@ -135,9 +136,14 @@ def test_useInstallRefusesFolderWithoutWeights(install):
 
 
 def test_installStatus(install):
+    """Installed only once the weights are in place in pyCERR's layout, both for an
+    install folder (installStatus) and for the recorded install (getInstallInfo)."""
     installDir, weightsDir, modelName = install
+    model_registry.recordInstall(MODEL_NUM, modelName, installDir)
     assert model_registry.installStatus(MODEL_NUM, None) == "not installed"
     assert model_registry.installStatus(MODEL_NUM, installDir.parent / "elsewhere") == "not installed"
     assert model_registry.installStatus(MODEL_NUM, installDir) == "no weights"
+    assert model_registry.getInstallInfo(MODEL_NUM)[0] is False
     (weightsDir / f"{modelName}.pt").write_bytes(b"weights v1")
     assert model_registry.installStatus(MODEL_NUM, installDir) == "installed"
+    assert model_registry.getInstallInfo(MODEL_NUM)[0] is True

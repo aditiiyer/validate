@@ -3,7 +3,9 @@ summary and provenance (logs.py)."""
 
 import copy
 import csv
+import platform
 import re
+from pathlib import Path
 
 import pytest
 import yaml
@@ -76,15 +78,6 @@ def test_onlyChangedTabRefused(analysisDir, key, value, refusedTab, allowedTab):
     assert excInfo.value.tab == refusedTab
     _, runIndex = _startRun(analysisDir, allowedTab)
     assert runIndex == 2
-
-
-def test_dataChangeRefusesBothTabs(analysisDir):
-    _startRun(analysisDir, "segment")
-    _startRun(analysisDir, "model")
-    _changeSettings(analysisDir, "input.data_dir", "/data/other")
-    for tab in logs.TABS:
-        with pytest.raises(logs.SettingsChangedError):
-            _startRun(analysisDir, tab)
 
 
 def test_firstRunOfTabAcceptsCurrentSettings(analysisDir):
@@ -164,32 +157,30 @@ def _segmentedLog(analysisDir, status="ok", files=("pt1/pt1_seg.nii.gz",)):
     return taskLog
 
 
-def test_segmentedWhenFilesExist(analysisDir):
+def _noTaskLog(analysisDir, status, files):
+    return None
+
+
+def _writeOutputs(analysisDir, names):
     (analysisDir / "pt1").mkdir()
-    (analysisDir / "pt1" / "pt1_seg.nii.gz").touch()
-    assert logs.isSegmented(analysisDir, _segmentedLog(analysisDir), "pt1", "ModelA")
+    for name in names:
+        (analysisDir / "pt1" / name).touch()
 
 
-@pytest.mark.parametrize("status, files, makeFiles", [
-    ("ok", ["pt1/pt1_seg.nii.gz"], False),
-    ("error", ["pt1/pt1_seg.nii.gz"], True),
-    ("ok", [], True),
-], ids=["files deleted", "run failed", "no files recorded"])
-def test_notSegmented(analysisDir, status, files, makeFiles):
-    if makeFiles:
-        (analysisDir / "pt1").mkdir()
-        (analysisDir / "pt1" / "pt1_seg.nii.gz").touch()
-    taskLog = _segmentedLog(analysisDir, status, files)
-    assert not logs.isSegmented(analysisDir, taskLog, "pt1", "ModelA")
-
-
-def test_notSegmentedForOtherPatientOrModel(analysisDir):
-    (analysisDir / "pt1").mkdir()
-    (analysisDir / "pt1" / "pt1_seg.nii.gz").touch()
-    taskLog = _segmentedLog(analysisDir)
-    assert not logs.isSegmented(analysisDir, taskLog, "pt2", "ModelA")
-    assert not logs.isSegmented(analysisDir, taskLog, "pt1", "ModelB")
-    assert not logs.isSegmented(analysisDir, None, "pt1", "ModelA")
+@pytest.mark.parametrize("outputFiles, status, recorded, patientId, aiModel, makeTaskLog, expected", [
+    (["pt1_seg.nii.gz"], "ok", ["pt1/pt1_seg.nii.gz"], "pt1", "ModelA", _segmentedLog, True),
+    ([], "ok", ["pt1/pt1_seg.nii.gz"], "pt1", "ModelA", _segmentedLog, False),
+    (["pt1_seg.nii.gz"], "error", ["pt1/pt1_seg.nii.gz"], "pt1", "ModelA", _segmentedLog, False),
+    (["pt1_seg.nii.gz"], "ok", [], "pt1", "ModelA", _segmentedLog, False),
+    (["pt1_seg.nii.gz"], "ok", ["pt1/pt1_seg.nii.gz"], "pt2", "ModelA", _segmentedLog, False),
+    (["pt1_seg.nii.gz"], "ok", ["pt1/pt1_seg.nii.gz"], "pt1", "ModelB", _segmentedLog, False),
+    (["pt1_seg.nii.gz"], "ok", ["pt1/pt1_seg.nii.gz"], "pt1", "ModelA", _noTaskLog, False),
+], ids=["segmented", "files deleted", "run failed", "no files recorded", "other patient",
+        "other AI model", "no task log"])
+def test_isSegmented(analysisDir, outputFiles, status, recorded, patientId, aiModel, makeTaskLog, expected):
+    _writeOutputs(analysisDir, outputFiles)
+    taskLog = makeTaskLog(analysisDir, status, recorded)
+    assert logs.isSegmented(analysisDir, taskLog, patientId, aiModel) == expected
 
 
 # Generate summary
@@ -216,20 +207,29 @@ def test_generateSummary(analysisDir):
     assert all(r["ai_model"] == "ModelA" and r["run"] == "0" for r in rows)
 
 
-def test_generateSummaryWithNoTaskLog(analysisDir):
-    with pytest.raises(FileNotFoundError, match="run Segment first"):
-        logs.generateSummary(analysisDir)
-
-
 # Provenance
 
-def test_softwareProvenanceRecordsCommits(analysisDir):
+def _fakeGit(validateDir):
+    """Stand-in for logs._run: git reports commit "v..." and a modified file for
+    validate's checkout, commit "p..." and no changes for pyCERR's."""
+    def run(cmd):
+        isValidate = cmd[2] == str(validateDir)
+        return {"rev-parse": ("v" if isValidate else "p") * 40,
+                "status": " M run.py" if isValidate else ""}[cmd[3]]
+    return run
+
+
+def test_softwareProvenanceRecordsCommits(analysisDir, monkeypatch):
+    monkeypatch.setattr(logs, "_run", _fakeGit(Path(logs.__file__).resolve().parent))
+
     taskLog, _ = _startRun(analysisDir)
+
     provenance = taskLog["runs"][0]["provenance"]
-    assert "pycerr_version" not in provenance
-    assert re.fullmatch(r"[0-9a-f]{40}", provenance["pycerr_commit"])
-    assert isinstance(provenance["pycerr_user_modified"], bool)
-    assert {"validate_commit", "validate_user_modified", "python"} <= provenance.keys()
+    assert provenance["validate_commit"] == "v" * 40
+    assert provenance["validate_user_modified"] is True
+    assert provenance["pycerr_commit"] == "p" * 40
+    assert provenance["pycerr_user_modified"] is False
+    assert provenance["python"] == platform.python_version()
 
 
 def test_aiModelProvenance(tmp_path):

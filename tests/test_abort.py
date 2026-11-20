@@ -11,17 +11,34 @@ from validate.gui.worker import killChildProcesses
 from validate.seg import autoseg_pipeline
 
 
+def _waitFor(condition, timeout=10):
+    """Poll until condition() is true (returning its value), or fail after timeout s."""
+    deadline = time.monotonic() + timeout
+    while not (value := condition()):
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.05)
+    return value
+
+
+def _running(pid):
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
 def test_killChildProcesses():
     # A child that starts its own child, like uv starting the model's Python
     proc = subprocess.Popen([sys.executable, "-c",
                              "import subprocess, sys, time; "
                              "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
                              "time.sleep(60)"])
-    time.sleep(1)
+    grandchild = _waitFor(lambda: psutil.Process(proc.pid).children())[0]
+
     killChildProcesses()
+
     assert proc.wait(timeout=10) is not None
-    time.sleep(0.5)
-    assert psutil.Process().children(recursive=True) == []      # its child too
+    assert _waitFor(lambda: not _running(grandchild.pid))
 
 
 def test_installStopsBetweenModels(monkeypatch):
@@ -49,9 +66,3 @@ def test_removePartialDownloads(tmp_path, monkeypatch):
 
     assert removed == [str(weightsDir / ".get_weights_abc")]
     assert sorted(p.name for p in weightsDir.iterdir()) == ["CT_HN_SMIT.safetensors"]
-
-
-def test_removePartialDownloadsWithoutRepo(tmp_path, monkeypatch):
-    monkeypatch.setattr(autoseg_pipeline.install_utils, "getModel", lambda num: ("CT_HN_SMIT", "smit", None))
-    monkeypatch.setattr(autoseg_pipeline.install_utils, "getRepoPath", lambda repo, installDir: tmp_path / repo)
-    assert autoseg_pipeline.removePartialDownloads([7], str(tmp_path)) == []

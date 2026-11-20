@@ -7,6 +7,7 @@ replaced with stand-ins, so no image data, install or GPU is needed.
 
 import copy
 import json
+import shutil
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -247,6 +248,7 @@ def model(tmp_path, analysisDir, monkeypatch):
     def runModel(patientModel, doseNum, planC, fSizeIn=None, fNumIn=None):
         seen["model"] = patientModel
         seen["structures"] = _names(planC)
+        seen["fractionation"] = (fSizeIn, fNumIn)
         return 0.5
 
     monkeypatch.setattr(structures, "STRUCTURE_REGISTRY", {
@@ -412,6 +414,75 @@ def test_patientPredictorsFromCsv(model, tmp_path):
     assert model.seen["model"]["parameters"]["concurrentChemo"]["val"] == 1.0
 
 
+@pytest.mark.parametrize("correctionType, expected", [("frxSize", (2.0, None)), ("frxNum", (None, 35.0))],
+                         ids=["fraction size", "fraction number"])
+def test_fractionationPassedToModel(model, tmp_path, correctionType, expected):
+    modelDict = json.loads((model.dir / "model.json").read_text())
+    (model.dir / "model.json").write_text(json.dumps(
+        {**modelDict, "fractionCorrect": "Yes", "correctionType": correctionType}))
+    planCsv = tmp_path / "plan.csv"
+    planCsv.write_text("ID,Prescribed dose (Gy),Fraction size (Gy)\npt1,70,2\n")
+    model.settings["input"]["plan_structures_csv"] = str(planCsv)
+    _saveSettings(model)
+
+    resultsDf, errors = _model(model)
+
+    assert errors == []
+    assert model.seen["fractionation"] == expected
+
+
+def test_missingFractionationIsAnError(model):
+    modelDict = json.loads((model.dir / "model.json").read_text())
+    (model.dir / "model.json").write_text(json.dumps(
+        {**modelDict, "fractionCorrect": "Yes", "correctionType": "frxSize"}))
+
+    resultsDf, errors = _model(model)
+
+    assert resultsDf["status"].tolist() == ["error"]
+    assert "requires fraction-size correction" in errors[0]
+
+
+# NTCP from pre-computed predictors (Start from: Pre-computed predictors)
+
+@pytest.fixture
+def predictorsRun(analysisDir, tmp_path, monkeypatch):
+    """Two patients in a predictors CSV (pt2 with a blank cell), no images. The stand-in
+    dosimetric model records the predictors it gets and returns 0.3."""
+    seen = {}
+    (analysisDir / "model.json").write_text(json.dumps({
+        "function": "logitFn",
+        "parameters": {"structures": {"Parotids": {"meanDose": {"weight": 1}}},
+                       "concurrentChemo": {"val": 0, "weight": 1}}}))
+    predictorsCsv = tmp_path / "predictors.csv"
+    predictorsCsv.write_text("ID,Parotids meanDose,concurrentChemo\npt1,25.5,1\npt2,30,\n")
+    settings = copy.deepcopy(RAW_SETTINGS)
+    settings["input"].update(start_from="predictors", data_dir=None, predictors_csv=str(predictorsCsv))
+    settings["model"]["file"] = str(analysisDir / "model.json")
+    writeYaml(analysisDir / "analysis.yaml", settings)
+
+    def runFromPredictors(modelFile, predictors):
+        seen[len(seen)] = predictors
+        return 0.3
+
+    monkeypatch.setattr(run.doseModels, "runFromPredictors", runFromPredictors)
+    return SimpleNamespace(dir=analysisDir, seen=seen)
+
+
+def test_ntcpFromPredictors(predictorsRun):
+    errorLog = logs.ErrorLog(predictorsRun.dir)
+    resultsDf = run.applyModelToCohort(str(predictorsRun.dir), errorLog)
+
+    assert _errorLines(errorLog) == []
+    assert resultsDf.to_dict("records") == [
+        {"patient_id": "pt1", "ntcp": 0.3, "status": "ok", "message": ""},
+        {"patient_id": "pt2", "ntcp": 0.3, "status": "ok", "message": ""}]
+    # Values used as given; a blank cell is left out (reported by the model as missing)
+    assert predictorsRun.seen == {0: {"Parotids meanDose": 25.5, "concurrentChemo": 1.0},
+                                  1: {"Parotids meanDose": 30.0}}
+    taskLog = _readTaskLog(predictorsRun.dir)
+    assert taskLog["patients"]["pt1"] == {"ntcp": {"status": "ok", "value": 0.3, "run": 0}}
+
+
 def test_allExistingNeedsNoSegment(model):
     model.settings["structures"]["Oral cavity"] = {"source": "existing", "name": "OralCavity"}
     model.settings["segment"] = {"ai_models": [], "install_dir": None}
@@ -431,11 +502,28 @@ def test_modelStopBetweenPatients(model):
 
 # listReqdAISegModels: what the Segment tab lists
 
-def test_aiModelsForModel(model):
-    assert structures.listReqdAISegModels(str(model.dir / "model.json")) == [AI_MODEL]
+# No patients: the run stops before it starts, with the reason
+
+def test_segmentStopsWithNoPatientFolders(segment, tmp_path):
+    (tmp_path / "empty").mkdir()
+    segment.capsule.cohort_dir, segment.capsule.patients = str(tmp_path / "empty"), {}
+    errorLog = logs.ErrorLog(segment.dir)
+    with pytest.raises(ValueError, match="No patient folders found in .*empty"):
+        run.applyAutoSegToCohort(str(segment.dir), errorLog)
+    assert _errorLines(errorLog) == [f"[ERROR] (setup): No patient folders found in {tmp_path / 'empty'}."]
+    assert not (segment.dir / logs.TASK_LOG_NAME).exists()      # no run recorded
 
 
-def test_segmentProgress(segment):
-    progress = []
-    _segment(segment, progressCallback=lambda done, total, pt: progress.append((done, total, pt)))
-    assert progress == [(0, 2, None), (1, 2, "pt1"), (2, 2, "pt2")]
+def test_segmentStopsWhenNoPatientCanBeRead(segment, tmp_path):
+    (tmp_path / "cohort" / "pt1").mkdir(parents=True)
+    segment.capsule.cohort_dir, segment.capsule.patients = str(tmp_path / "cohort"), {}
+    with pytest.raises(ValueError, match="None of the patient folders .* could be read"):
+        run.applyAutoSegToCohort(str(segment.dir), logs.ErrorLog(segment.dir))
+
+
+def test_modelStopsWithNoPatientFolders(model, tmp_path):
+    shutil.rmtree(tmp_path / "data" / "pt1")
+    runsBefore = len(_readTaskLog(model.dir)["runs"])
+    with pytest.raises(ValueError, match="No patient folders found in"):
+        _model(model)
+    assert len(_readTaskLog(model.dir)["runs"]) == runsBefore    # no run recorded

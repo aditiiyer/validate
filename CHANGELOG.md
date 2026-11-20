@@ -12,11 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `installMissingModels` passes extra options (such as `weightsUrl`) on to pyCERR's
   `install_utils`.
 - README.md, CHANGELOG.md and LICENSE.
-- Header: "Start from" choice, Data (DICOM/NIfTI) or Pre-computed predictors. 
+- Header: "Start from" choice, Data (DICOM/NIfTI) or Pre-computed predictors.
 - Segment tab: "Weights URL" field, to install an AI model's weights from a download link
-  (one model at a time). The link is not saved to `analysis.yaml`.
 - `psutil` dependency, used to abort runs and installs.
-- Tests for aborting runs and installs.
+- Tests for fractionation correction, NTCP from pre-computed predictors, one run at a
+  time, and clearing results when settings change.
 
 ### Changed
 
@@ -27,11 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Model tab: structures default to Derive where a recipe is registered.
 - Oral cavity, Submandibular glands and Parotids-SCRR are derived from CT_HN_SMIT
   (model 7) outputs instead of CT_HeadAndNeck_OARs (model 3).
+- The Device setting is passed to AI models that accept `--device`; the task log records
+  only the GPU used.
+- Run progress: a busy bar with the current step and "n/total patients done".
+- Test suite: hermetic and faster, without duplicate or trivial tests.
 
 ### Fixed
 
-- Analysis folders inside the cohort directory are no longer counted as patients.
 - NRRD scans are converted to NIfTI for the AI models, which read only NIfTI or DICOM.
+- Derived Oral cavity is named as the model expects (CT_HN_SMIT outputs `Oral_Cavity`).
+- A run with no patient folders stops with "No patient folders found in <data_dir>",
+  instead of appearing to stall.
+
+### Removed
+
+- Unused `diffSettings`.
 
 ## [0.5.0] - 2026-11-13
 

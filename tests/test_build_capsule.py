@@ -35,8 +35,7 @@ def test_failedPatientsSkippedAndLogged(capsule):
     assert [record.pt_id for record in records] == ["pt1"]
     assert records[0].plan_info.fx_size == 2.0
     assert [ptId for ptId, _ in errorLog.lines] == ["pt2", "pt3"]
-    for _, message in errorLog.lines:
-        assert message.startswith("Could not build patient record; skipped:")
+    assert all(message.startswith("Could not build patient record; skipped:") for _, message in errorLog.lines)
     assert "No DICOM, NIfTI or NRRD files found" in errorLog.lines[0][1]
     assert "'Fraction size (Gy)' must be a number" in errorLog.lines[1][1]
 
