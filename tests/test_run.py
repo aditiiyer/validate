@@ -56,7 +56,7 @@ def segment(analysisDir, monkeypatch):
     calls = []
     failFor = {}
 
-    def runAIModel(modelNum, record, sessionDir, progressCallback=None, outputDir=None):
+    def runAIModel(modelNum, record, sessionDir, progressCallback=None, outputDir=None, device=None):
         calls.append(("ai", modelNum, record.pt_id))
         if record.pt_id in failFor:
             raise failFor[record.pt_id]
@@ -438,4 +438,4 @@ def test_aiModelsForModel(model):
 def test_segmentProgress(segment):
     progress = []
     _segment(segment, progressCallback=lambda done, total, pt: progress.append((done, total, pt)))
-    assert progress == [(1, 2, "pt1"), (2, 2, "pt2")]
+    assert progress == [(0, 2, None), (1, 2, "pt1"), (2, 2, "pt2")]

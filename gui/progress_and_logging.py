@@ -103,13 +103,14 @@ class ManageRun(QWidget):
             return
 
         self.worker = worker
-        worker.stage.connect(self.stageLabel.setText)
+        worker.stage.connect(self._onStage)
         worker.progress.connect(self._onProgress)
         worker.finishedOk.connect(self._onFinished)
         worker.failed.connect(self._onFailed)
-        self.progressBar.setValue(0)
-        self.progressBar.setFormat("%p%")
-        self.stageLabel.setText("Starting...")
+        # In progress: a busy (animated) bar; the stage and patient count are shown above it
+        self._stage, self._done, self._total = "Starting...", 0, None
+        self.progressBar.setRange(0, 0)
+        self._showStatus()
         self.stageLabel.setVisible(True)
         self.progressBar.setVisible(True)
         self._setRunning(True)
@@ -160,19 +161,37 @@ class ManageRun(QWidget):
         if self.worker is not None:
             self.worker.requestStop()
             self.stopBtn.setEnabled(False)
-            self.stageLabel.setText("Stopping after the current patient...")
+            self._onStage("Stopping after the current patient...")
+
+    def _onStage(self, message):
+        """Show the run's current stage (e.g. the AI model being applied)."""
+        self._stage = message
+        self._showStatus()
 
     def _onProgress(self, done, total, patientId):
-        """Show progress as "done/total  patientId".
+        """Update the count of patients done.
 
         Args:
             done (int): Patients processed so far.
             total (int): Patients in the cohort.
-            patientId (str): The patient just processed.
+            patientId (str or None): The patient just processed (None at the start).
         """
-        self.progressBar.setMaximum(total)
-        self.progressBar.setValue(done)
-        self.progressBar.setFormat(f"{done}/{total}  {patientId}")
+        self._done, self._total = done, total
+        self._showStatus()
+
+    def _showStatus(self):
+        """While running: "<stage> · <done>/<total> patients done"."""
+        count = f"{self._done}/{self._total} patients done" if self._total is not None else ""
+        self.stageLabel.setText("  ·  ".join(part for part in (self._stage, count) if part))
+
+    def _showOutcome(self, outcome):
+        """End the busy bar: "<outcome> (<done>/<total> patients)", the bar filled to
+        the patients done, and the stage line hidden."""
+        total = self._total
+        self.progressBar.setRange(0, max(total or 0, 1))
+        self.progressBar.setValue(self._done if total else 0)
+        self.progressBar.setFormat(f"{outcome} ({self._done}/{total} patients)" if total is not None else outcome)
+        self.stageLabel.setVisible(False)
 
     def _onFinished(self, results, errorLogPath):
         """Show that the run finished (or stopped).
@@ -185,7 +204,7 @@ class ManageRun(QWidget):
         self._setRunning(False)
         stopped = self.worker is not None and self.worker._stopRequested
         aborted = self.worker is not None and self.worker.aborted
-        self.stageLabel.setText("Aborted." if aborted else "Stopped." if stopped else "Done.")
+        self._showOutcome("Aborted" if aborted else "Stopped" if stopped else "Done")
 
     def _onFailed(self, message, errorLogPath):
         """Show that the run failed, with its error message.
@@ -197,9 +216,9 @@ class ManageRun(QWidget):
         self._errorLogPath = errorLogPath
         self._setRunning(False)
         if self.worker is not None and self.worker.aborted:
-            self.stageLabel.setText("Aborted.")     # no pop-up: the window is closing
+            self._showOutcome("Aborted")     # no pop-up: the window is closing
             return
-        self.stageLabel.setText("Failed.")
+        self._showOutcome("Failed")
         QMessageBox.critical(self, "Run failed", message)
 
     # Logs

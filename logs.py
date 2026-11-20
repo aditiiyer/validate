@@ -23,6 +23,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 import warnings
 from contextlib import contextmanager
 from datetime import datetime
@@ -156,7 +157,7 @@ def startRun(analysisDir, settingsPath, tab, errorLogPath=None, details=None):
         "provenance_id": _sha256(_canonical({"settings_hash": currentHash, **provenance})),
         "provenance": provenance,
         "device": device,
-        "hardware": _hardware(),
+        "hardware": _hardware(device if tab == "segment" else "cpu"),
         "error_log": os.path.relpath(errorLogPath, analysisDir) if errorLogPath else None,
     })
     writeTaskLog(analysisDir, taskLog)
@@ -369,14 +370,38 @@ def _fileSha256(path):
     return digest.hexdigest()
 
 
-def _hardware():
-    gpus = _run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"])
+def _hardware(device="cpu"):
+    """The machine, and the GPU(s) the run uses (see _gpusUsed); device is the
+    settings' compute.device, and only Segment runs (AI models) use a GPU."""
     return {
         "os": platform.platform(),
         "machine": platform.machine(),
         "processor": platform.processor() or None,
-        "gpus": gpus.splitlines() if gpus else [],
+        "gpus": _gpusUsed(device),
     }
+
+
+def _gpusUsed(device):
+    """The GPU an AI model uses, not every GPU in the machine: none on the CPU; on a
+    Mac, its Apple-silicon GPU (MPS); with NVIDIA GPUs, the first one visible to the
+    model, i.e. the first in CUDA_VISIBLE_DEVICES if it's set, else GPU 0, numbered
+    as nvidia-smi does (runAIModel sets CUDA_DEVICE_ORDER=PCI_BUS_ID to match)."""
+    if device != "gpu":
+        return []
+    if sys.platform == "darwin":
+        return [{"name": "Apple silicon GPU (MPS)"}] if platform.machine() == "arm64" else []
+    listed = _run(["nvidia-smi", "--query-gpu=index,uuid,name", "--format=csv,noheader"])
+    if not listed:
+        return []
+    gpus = []
+    for line in listed.splitlines():
+        index, uuid, name = (field.strip() for field in line.split(",", 2))
+        gpus.append({"index": int(index), "uuid": uuid, "name": name})
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None and not visible.strip():
+        return []           # no GPU visible to the model
+    first = visible.split(",")[0].strip() if visible else "0"
+    return [gpu for gpu in gpus if first in (str(gpu["index"]), gpu["uuid"])][:1]
 
 
 def _git(repoDir, *args):

@@ -2,7 +2,9 @@
 - Check install status, install missing AI models, then run+derive+export+log per patient.
 """
 
+import os
 import shutil
+import sys
 from pathlib import Path
 
 import SimpleITK as sitk
@@ -107,8 +109,16 @@ def removePartialDownloads(modelNums, installBaseDir):
     return removed
 
 
+def modelDevice(device):
+    """The --device value for an AI model, from the settings' compute.device:
+    "cuda" for gpu ("mps" on a Mac), "cpu" for cpu."""
+    if device == "gpu":
+        return "mps" if sys.platform == "darwin" else "cuda"
+    return "cpu"
+
+
 def runAIModel(modelNum, record, sessionDir,
-               progressCallback=None, outputDir=None):
+               progressCallback=None, outputDir=None, device=None):
     """Run one AI model on one patient (DICOM, NIfTI or NRRD).
 
     Args:
@@ -121,6 +131,10 @@ def runAIModel(modelNum, record, sessionDir,
         progressCallback (callable): optional f(message) status hook.
         outputDir (str or None): folder the model writes its outputs to.
             Defaults to the patient's folder, record.file_info.data_dir.
+        device (str or None): the settings' compute.device ("gpu" or "cpu"), passed
+            as --device (see modelDevice) to models whose script accepts it. A model
+            asked for a GPU it can't use stops with an error, rather than running
+            on the CPU. None leaves the choice to the model.
     """
     installed, installInfo = model_registry.getInstallInfo(modelNum)
     if not installed:
@@ -144,6 +158,13 @@ def runAIModel(modelNum, record, sessionDir,
 
     userInputs = {"input_path": inputDir, "output_path": str(outputDir) if outputDir else dataDir,
                  "session_path": sessionDir}
+    if device is not None:
+        _, repo, entrypoint = install_utils.getModel(modelNum)
+        if entrypoint and run_utils.additionalInputs(install_utils.getRepoPath(repo, installDir) / entrypoint,
+                                                     "--device"):
+            userInputs["device"] = modelDevice(device)
+        # Number GPUs as nvidia-smi does, so the GPU recorded in the task log is the one used
+        os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     if progressCallback:
         progressCallback(f"Applying {installInfo['modelName']} AI segmentation model...")
     run_utils.main(modelNum, installDir, userInputs)

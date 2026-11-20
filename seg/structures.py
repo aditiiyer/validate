@@ -144,6 +144,7 @@ def _getIndex(planC, strName):
 
 def deriveOralCavity(planC, scanNum):
     structNum = _getIndex(planC, 'Oral_Cavity')
+    planC.structure[structNum].structureName = 'Oral cavity'
     return structNum, planC
 
 

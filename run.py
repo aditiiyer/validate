@@ -50,7 +50,7 @@ def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCall
             logs, sessions and the AI outputs (<analysisDir>/<patientId>/).
         errorLog (validate.logs.ErrorLog): error log to write to.
         progressCallback (callable): optional f(done, total, patientId) hook,
-            invoked after each patient is processed.
+            invoked once at the start (0, total, None), then after each patient is processed.
         stageCallback (callable): optional f(message) hook for the AI model's stages.
         overwrite (bool): if True, re-run models that already ran.
         shouldStop (callable): optional f() -> bool, checked before each patient;
@@ -66,6 +66,8 @@ def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCall
     with logs.collectWarnings() as capsuleWarnings:
         try:
             dataCapsule = buildCapsule(settingsPath, errorLog=errorLog)
+            if not dataCapsule.patients:
+                _noPatientsError(dataCapsule.cohort_dir)
             installDir = dataCapsule.ai_install_dir
             aiModels = [_useAIModel(name, installDir) for name in dataCapsule.ai_models]
             details = {"ai_models": [logs.aiModelProvenance(modelName, installDir,
@@ -80,6 +82,8 @@ def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCall
 
     results = {}
     total = len(dataCapsule.patients)
+    if progressCallback:
+        progressCallback(0, total, None)
 
     # Loop over pts
     for i, record in enumerate(dataCapsule.patients.values()):
@@ -100,7 +104,8 @@ def applyAutoSegToCohort(analysisDir, errorLog, progressCallback=None, stageCall
                 try:
                     outDir.mkdir(parents=True, exist_ok=True)
                     before = _fileStamps(outDir)
-                    runAIModel(modelNum, record, str(sessionDir), stageCallback, outputDir=str(outDir))
+                    runAIModel(modelNum, record, str(sessionDir), stageCallback, outputDir=str(outDir),
+                               device=dataCapsule.device)
                     # The model's outputs: files it added or rewrote in outDir
                     files = sorted(f for f, stamp in _fileStamps(outDir).items() if before.get(f) != stamp)
                     if not files:
@@ -142,7 +147,7 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
             dosimetric model, the structures and the CSV inputs.
         errorLog (validate.logs.ErrorLog): error log to write to.
         progressCallback (callable): optional f(done, total, patientId) hook,
-            invoked after each patient is processed.
+            invoked once at the start (0, total, None), then after each patient is processed.
         shouldStop (callable): optional f() -> bool, checked before each patient;
             True stops the run there.
         isAborted (callable): optional f() -> bool; True once the run was aborted.
@@ -167,6 +172,8 @@ def applyModelToCohort(analysisDir, errorLog, progressCallback=None, shouldStop=
         raise
 
     total = len(patients)
+    if progressCallback:
+        progressCallback(0, total, None)
     rows = []
     for i, (patientId, dataDir) in enumerate(patients):
         if shouldStop and shouldStop():
@@ -232,7 +239,7 @@ def deriveStructuresForCohort(analysisDir, errorLog, progressCallback=None, shou
         analysisDir (str): the analysis folder holding the settings file (analysis.FILE_NAME).
         errorLog (validate.logs.ErrorLog): error log to write to.
         progressCallback (callable): optional f(done, total, patientId) hook,
-            invoked after each patient is processed.
+            invoked once at the start (0, total, None), then after each patient is processed.
         shouldStop (callable): optional f() -> bool, checked before each patient;
             True stops the run there.
         isAborted (callable): optional f() -> bool; True once the run was aborted.
@@ -258,6 +265,8 @@ def deriveStructuresForCohort(analysisDir, errorLog, progressCallback=None, shou
         raise
 
     total = len(inputs.patients)
+    if progressCallback:
+        progressCallback(0, total, None)
     rows = []
     for i, (patientId, dataDir) in enumerate(inputs.patients):
         if shouldStop and shouldStop():
@@ -335,6 +344,8 @@ def _modelInputs(settingsPath):
         patients = [(ptId, None) for ptId in sorted(predictorsDf.index)]
     else:
         patients = discoverPatients(dataCapsule.cohort_dir)
+        if not patients:
+            _noPatientsError(dataCapsule.cohort_dir)
     modelFile = dataCapsule.model["file"]
     planStructuresCsv = dataCapsule.plan_structures_csv
     requiredStructs = getRequiredStructures(modelFile)
@@ -345,6 +356,15 @@ def _modelInputs(settingsPath):
         patientInfoDf=loadPatientInfo(planStructuresCsv) if planStructuresCsv else None,
         recipes=recipes,
         deriveNames=_deriveOrder(name for name in requiredStructs if recipes[name].get("source") == "derive"))
+
+
+def _noPatientsError(cohortDir):
+    """Stop a run that has no patients, before it starts, with the reason: the data
+    folder holds no patient folders, or none of them could be read (each is in the
+    error log)."""
+    if not discoverPatients(cohortDir):
+        raise ValueError(f"No patient folders found in {cohortDir}.")
+    raise ValueError(f"None of the patient folders in {cohortDir} could be read; see the error log.")
 
 
 def _errorMessage(exc, isAborted):

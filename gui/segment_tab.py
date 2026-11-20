@@ -255,7 +255,7 @@ class SegmentTab(ManageRun):
         nums = [self._modelRows[name]["num"] for name in names]
         self.installBtn.setEnabled(False)
         self.runBtn.setEnabled(False)
-        self.progressBar.reset()        # clear the last run's progress
+        self.progressBar.setVisible(False)      # the install has its own progress bar
         self.stageLabel.setText("Starting install...")
         self.stageLabel.setVisible(True)
         self.installProgress.setVisible(True)
