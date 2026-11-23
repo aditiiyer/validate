@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `psutil` dependency, used to abort runs and installs.
 - Tests for fractionation correction, NTCP from pre-computed predictors, one run at a
   time, and clearing results when settings change.
+- Tutorials: SCRR segmentation on H&N CT (with a xerostomia NTCP demo using a synthetic
+  dose), and xerostomia NTCP from a DICOM cohort, with sample settings.
 
 ### Changed
 
@@ -31,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only the GPU used.
 - Run progress: a busy bar with the current step and "n/total patients done".
 - Test suite: hermetic and faster, without duplicate or trivial tests.
+- SCRR inputs are passed to pyCERR by side (left/right parotid and masseter); requires
+  the matching pyCERR update.
 
 ### Fixed
 

@@ -43,7 +43,9 @@ def planC(monkeypatch):
         return planC
 
     def runSegModel(modelName, planC, scanNum, paramDict):
-        _requireStructures(planC, [name for names in paramDict["structNameDict"].values() for name in names])
+        assert set(paramDict["structNameDict"]) == {"left_parotid", "right_parotid", "left_masseter",
+                                                    "right_masseter", "mandible"}
+        _requireStructures(planC, list(paramDict["structNameDict"].values()))
         planC.structure += [_struct("leftSCRR"), _struct("rightSCRR")]
         return None, None, planC
 

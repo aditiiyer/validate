@@ -1,0 +1,27 @@
+# Sample settings: compute the risk of grade 2+ xerostomia on a head-and-neck DICOM cohort.
+# Each patient folder holds the planning CT and RTDOSE. The four structures the model needs
+# are derived from CT_HN_SMIT outputs.
+# data_dir and install_dir are filled in by the tutorial notebook (demo_ntcp_xerostomia.ipynb).
+input:
+  start_from: dicom
+  data_dir: null
+  # pretreatment_toxicity per patient (placeholder values, all 0 = No). IDs must match the
+  # patient folder names. Relative to the tutorials folder; the notebook makes it absolute.
+  predictors_csv: sample_settings/clinical_predictors_xerostomia.csv
+compute:
+  device: gpu
+model:
+  name: Xerostomia (grade 2+)
+segment:
+  ai_models:
+  - CT_HN_SMIT
+  install_dir: null
+structures:
+  SCRR:
+    source: derive
+  Parotids-SCRR:
+    source: derive
+  Submandibular glands:
+    source: derive
+  Oral cavity:
+    source: derive

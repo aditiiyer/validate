@@ -157,9 +157,9 @@ def deriveSubmandibularGlands(planC, scanNum):
 
 def deriveSCRR(planC, scanNum):
     modelName = 'SCRR'
-    paramDict = {'structNameDict': {'parotid': ['Parotid_L', 'Parotid_R'],
-                                    'masseter': ['Masseter_L', 'Masseter_R'],
-                                    'mandible': ['Mandible']}}
+    paramDict = {'structNameDict': {'left_parotid': 'Parotid_L', 'right_parotid': 'Parotid_R',
+                                    'left_masseter': 'Masseter_L', 'right_masseter': 'Masseter_R',
+                                    'mandible': 'Mandible'}}
     __, __, planC = segModels.run(modelName, planC, scanNum, paramDict)
     planC = cerrStr.structUnion(['leftSCRR', 'rightSCRR'], planC, unionStructName=modelName)
     structNum = len(planC.structure) - 1

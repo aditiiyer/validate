@@ -1,0 +1,16 @@
+# Sample settings: segment the stem-cell rich region (SCRR) on CT scans (NRRD).
+# data_dir and install_dir are filled in by the tutorial notebook.
+input:
+  start_from: nrrd
+  data_dir: null
+compute:
+  device: gpu
+model:
+  name: Xerostomia (grade 2+)
+segment:
+  ai_models:
+  - CT_HN_SMIT
+  install_dir: null
+structures:
+  SCRR:
+    source: derive
