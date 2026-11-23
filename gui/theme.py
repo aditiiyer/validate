@@ -112,6 +112,14 @@ QPushButton#primaryButton {{
 }}
 QPushButton#primaryButton:hover {{ background: {PRIMARY_HOVER}; }}
 QPushButton#primaryButton:pressed {{ background: {PRIMARY_PRESSED}; }}
+/* Notify when done: a teal outline, quieter than the filled primary buttons */
+QPushButton#notifyButton {{
+    background: transparent;
+    color: {ACCENT};
+    border: 1px solid {PRIMARY_BORDER};
+}}
+QPushButton#notifyButton:hover {{ background: {TAB_HOVER}; border-color: {ACCENT}; }}
+QPushButton#notifyButton:pressed {{ background: {PRIMARY_PRESSED}; color: {PRIMARY_TEXT}; }}
 QPushButton:disabled, QPushButton#primaryButton:disabled {{
     background: transparent;
     color: {DISABLED_TEXT};

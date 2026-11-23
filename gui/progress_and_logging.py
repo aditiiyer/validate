@@ -1,6 +1,7 @@
 """Shared functionalities of the Segment and Model tabs: Run, Stop, Log, progress, and the checks made before a run.
 """
 
+import time
 from pathlib import Path
 
 from PyQt5.QtCore import QUrl
@@ -114,6 +115,7 @@ class ManageRun(QWidget):
         self.stageLabel.setVisible(True)
         self.progressBar.setVisible(True)
         self._setRunning(True)
+        self._runStarted = time.monotonic()
         worker.start()
 
     def _checkSettingsUnchanged(self, analysisDir):

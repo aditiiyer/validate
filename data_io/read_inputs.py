@@ -1,46 +1,47 @@
 """Cohort discovery, importing data and analysis settings to DataCapsule
 
-Required inputs
- Raw data or pre-computed predictors
+Inputs::
 
-    * Raw data
-        cohort_dir/
-            pt001/   (scan, dose and structure files: DICOM, NIfTI or NRRD)
-            pt002/
-            ...
-    * Predictors (CSV input)
-        One row per patient."ID" is required. Other columns are model-dependent.
-        Columns containing DVH metrics should be named "<structure> <metric>"  as in the model file (e.g. "Esophagus meanDose").
-        Values must already be fractionation-corrected if the model requires correction.
+    Required inputs
+     Raw data or pre-computed predictors
 
-Optional inputs:
+        * Raw data
+            cohort_dir/
+                pt001/   (scan, dose and structure files: DICOM, NIfTI or NRRD)
+                pt002/
+                ...
+        * Predictors (CSV input)
+            One row per patient."ID" is required. Other columns are model-dependent.
+            Columns containing DVH metrics should be named "<structure> <metric>"  as in the model file (e.g. "Esophagus meanDose").
+            Values must already be fractionation-corrected if the model requires correction.
 
-    * plan_structures_csv (optional input alongside raw data)
-    One row per patient. Only "ID" is required; every other column is optional.
+    Optional inputs:
 
-        ID               Patient folder name under cohort_dir.
-        Plan name        DICOM only: RTDOSE file name, used where more than one dose plan is available.
-        Prescribed dose (Gy)  Total prescribed dose. Number only, in Gy.
-        Fraction size (Gy)    Dose per fraction. Number only, in Gy.
-        Fraction number  Number of fractions.
-        Scan file        NIfTI/NRRD only: scan file name or wildcard pattern.
-        Dose file        NIfTI/NRRD only: dose file name or wildcard pattern.
-                         The loaded dose is used as dose index 0.
-        <structure>      One column per structure the model requires, named as in
-                         the model. The value is:
-                         DICOM      : Structure name in the RTSTRUCT
-                         NIfTI/NRRD : Mask file name or pattern, or "file:label"
-                                   for a label map (e.g. "labels.nii.gz:3")
+        * plan_structures_csv (optional input alongside raw data)
+        One row per patient. Only "ID" is required; every other column is optional.
 
-    File names and patterns are relative to the patient's folder and
-    must match exactly one file.
+            ID               Patient folder name under cohort_dir.
+            Plan name        DICOM only: RTDOSE file name, used where more than one dose plan is available.
+            Prescribed dose (Gy)  Total prescribed dose. Number only, in Gy.
+            Fraction size (Gy)    Dose per fraction. Number only, in Gy.
+            Fraction number  Number of fractions.
+            Scan file        NIfTI/NRRD only: scan file name or wildcard pattern.
+            Dose file        NIfTI/NRRD only: dose file name or wildcard pattern.
+                             The loaded dose is used as dose index 0.
+            <structure>      One column per structure the model requires, named as in
+                             the model. The value is:
+                             DICOM      : Structure name in the RTSTRUCT
+                             NIfTI/NRRD : Mask file name or pattern, or "file:label"
+                                       for a label map (e.g. "labels.nii.gz:3")
 
-    Example:
-    ID,Prescribed dose (Gy),Fraction size (Gy),Fraction number,Scan file,Dose file,Parotids,Oral cavity
-    pt_1,70,2,35,scan_*.nii.gz,dose_*.nii.gz,Parotids.nii.gz,labels.nii.gz:3
+        File names and patterns are relative to the patient's folder and
+        must match exactly one file.
 
-    * predictors_csv (optional, raw data only)
+        Example:
+        ID,Prescribed dose (Gy),Fraction size (Gy),Fraction number,Scan file,Dose file,Parotids,Oral cavity
+        pt_1,70,2,35,scan_*.nii.gz,dose_*.nii.gz,Parotids.nii.gz,labels.nii.gz:3
 
+        * predictors_csv (optional, raw data only)
 """
 
 import os
@@ -151,7 +152,8 @@ def loadPatientInfo(csvPath):
 
     All columns besides "ID" are optional and only consulted when needed:
 
-    In plan_structures_csv:
+    In plan_structures_csv::
+
         "Plan name"       - RTDOSE file name, to disambiguate patients with
                               more than one dose (see getDoseIndex).
         "Prescribed dose (Gy)" - total prescribed dose (Gy).
@@ -160,7 +162,8 @@ def loadPatientInfo(csvPath):
         Supplying any two of the last three lets the third be derived (see
         getFractionation).
 
-    In predictors_csv:
+    In predictors_csv::
+
         "<structure> <metric>" - start_from: predictors only. One column per
                               dose metric the model uses, named as in the
                               model file (e.g. "Esophagus meanDose").

@@ -5,7 +5,8 @@
 2. Task log: task_log.yaml in the analysis directory, written only by the tool.
    Holds one settings hash per tab (decides whether that tab's runs may resume),
    one entry per invocation with the tab that ran, its provenance ID, software
-   commits and hardware, and per-patient results:
+   commits and hardware, and per-patient results::
+
        patients:
          pt001:
            segment: {<AI model>: {status, run, files, labels, warnings}}
@@ -279,7 +280,8 @@ def collectWarnings():
     """Collect the messages of UserWarnings raised inside the block, without
     printing them, so they can be written to task_log.yaml.
 
-    Usage:
+    Usage::
+
         with collectWarnings() as messages:
             ...
         # messages now holds the unique warning texts, in order

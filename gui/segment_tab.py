@@ -2,9 +2,11 @@
 (installing them first if needed). Structures are derived later, in the Model tab.
 """
 
+import time
+
 from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QMessageBox,
-    QCheckBox, QRadioButton, QButtonGroup, QWidget, QProgressBar
+    QCheckBox, QRadioButton, QButtonGroup, QWidget, QProgressBar, QInputDialog
 )
 
 from cerr.ai_models import model_list
@@ -14,7 +16,8 @@ from validate.gui.worker import InstallWorker, SegmentWorker
 from validate.gui import theme
 from validate.seg import model_registry
 from validate.seg.structures import listReqdAISegModels
-from validate import logs
+from validate import logs, notify
+from validate.core import analysis
 
 STATUS_TEXT = {"installed": ("Installed", "#3ecf8e"),
                "no weights": ("Weights not installed", "#e0b35f"),
@@ -105,6 +108,16 @@ class SegmentTab(ManageRun):
         deviceRow.addWidget(self.cpuRadio)
         deviceRow.addStretch()
         layout.addWidget(self.modelsGroup)
+
+        # Optional email when the run ends (sent with this machine's sendmail; the address isn't saved)
+        self.notifyBtn = QPushButton("Notify when done")
+        self.notifyBtn.setObjectName("notifyButton")      # teal outline (theme.py)
+        deviceRow.addWidget(self.notifyBtn)                # after the stretch, so it sits on the right
+        self.notifyBtn.setToolTip("Email the run's status, run time and where to find its files "
+                                  "(no patient data), using this machine's mail system (sendmail).")
+        self.notifyBtn.clicked.connect(self._chooseNotifyAddress)
+        self._notifyChosen = None        # address entered with Notify when done
+        self._notifyAddress = None       # the address for the run in progress
 
         runGroup, runLayout = theme.section("Run")
         runLayout.addLayout(deviceRow)
@@ -313,10 +326,85 @@ class SegmentTab(ManageRun):
             QMessageBox.warning(self, "Segment", f"Not installed in {installDir or '(no folder)'}: "
                                                  f"{', '.join(notInstalled)}. Install them first.")
             return None
+        if not self._checkNotify():
+            return None
         overwrite = self._askOverwrite(analysisDir, ticked)
         if overwrite is None:
             return None
         return SegmentWorker(analysisDir, overwrite=overwrite)
+
+    # Email when done
+
+    def _chooseNotifyAddress(self):
+        """Notify when done: ask for the email address (OK sets it; Cancel or an empty
+        address turns the email off)."""
+        if notify.findSendmail() is None:
+            QMessageBox.warning(self, "Notify when done",
+                                "This machine has no mail system (sendmail), so no email can be sent.")
+            return
+        address, ok = QInputDialog.getText(self, "Notify when done",
+                                           "Email the run's status when it finishes, to:",
+                                           QLineEdit.Normal, self._notifyChosen or "")
+        while ok and address.strip() and not notify.isValidAddress(address.strip()):
+            address, ok = QInputDialog.getText(self, "Notify when done",
+                                               "Enter one email address, e.g. name@example.org:",
+                                               QLineEdit.Normal, address)
+        if not ok:
+            return
+        self._notifyChosen = address.strip() or None
+        self.notifyBtn.setText(f"Notify: {self._notifyChosen}" if self._notifyChosen else "Notify when done")
+
+    def _checkNotify(self):
+        """Before a run: keep the Notify when done address for this run, after checking
+        this machine can still send mail. Returns False to cancel the run."""
+        self._notifyAddress = None
+        if not self._notifyChosen:
+            return True
+        if notify.findSendmail() is None:
+            QMessageBox.warning(self, "Notify when done",
+                                "This machine has no mail system (sendmail), so no email can be sent.")
+            return False
+        self._notifyAddress = self._notifyChosen
+        return True
+
+    def _onFinished(self, results, errorLogPath):
+        super()._onFinished(results, errorLogPath)
+        failedPatients = sum(any(str(r).startswith("error") for r in models.values())
+                             for models in (results or {}).values())
+        reasons = []
+        if self.worker is not None and self.worker.aborted:
+            reasons.append("aborted")
+        elif self.worker is not None and self.worker._stopRequested:
+            reasons.append(f"stopped after {self._done} of {self._total} patients")
+        if failedPatients:
+            reasons.append(f"{failedPatients} of {self._total} patients failed")
+        self._sendNotification(not reasons, "; ".join(reasons) or None, errorLogPath)
+
+    def _onFailed(self, message, errorLogPath):
+        aborted = self.worker is not None and self.worker.aborted
+        if self._notifyAddress:
+            # Send before the failure pop-up, which waits for the user
+            reason = "aborted" if aborted else "run failed: " + (message.strip().splitlines() or [""])[0][:200]
+            self._sendNotification(False, reason, errorLogPath, beforeOutcome=True)
+        super()._onFailed(message, errorLogPath)
+
+    def _sendNotification(self, succeeded, reason, errorLogPath, beforeOutcome=False):
+        """Email the run's outcome, if asked for, and note on the progress bar whether it was sent."""
+        address, self._notifyAddress = self._notifyAddress, None
+        if not address:
+            return
+        analysisDir = self.host.analysisDir()
+        message = notify.runEmail(address, "Segment", succeeded, reason, time.monotonic() - self._runStarted,
+                                  analysisDir, analysis.FILE_NAME, errorLogPath)
+        try:
+            notify.sendEmail(message)
+            note = f"email sent to {address}"
+        except RuntimeError as exc:
+            note = "email not sent"
+            if not (self.worker is not None and self.worker.aborted):    # the window may be closing
+                QMessageBox.warning(self, "Email not sent", str(exc))
+        if not beforeOutcome:
+            self.progressBar.setFormat(f"{self.progressBar.format()}  ·  {note}")
 
     def _askOverwrite(self, analysisDir, aiModels):
         """If any patient already has outputs for aiModels, ask whether to keep
