@@ -1,0 +1,6 @@
+ID,SCRR meanDose,Parotids-SCRR meanDose,Submandibular glands meanDose,Oral cavity meanDose,pretreatment_toxicity
+pt_001,24.1,22.8,48.3,35.6,0
+pt_002,31.7,27.4,55.0,41.2,1
+pt_003,18.9,19.5,39.8,28.7,0
+pt_004,27.3,25.1,51.6,38.4,0
+pt_005,35.2,30.6,60.9,45.1,1

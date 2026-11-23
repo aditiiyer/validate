@@ -2,3 +2,8 @@ ai_model_installs.yaml
 .DS_Store
 troubleshooting_log.md
 testing_policy.md
+
+# Documentation build output
+docs/_build/
+docs/api/generated/
+documentation_policy.md

@@ -1,0 +1,11 @@
+/* Screenshots: a thin border and rounded corners, so the dark GUI stands out on either theme */
+img.screenshot {
+  border: 1px solid var(--pst-color-border);
+  border-radius: 6px;
+  margin: 0.5rem 0 1rem;
+}
+
+/* Numbered steps: a little more space between them */
+.bd-article ol > li {
+  margin-bottom: 0.4rem;
+}
